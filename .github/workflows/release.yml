@@ -53,7 +53,7 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
 
-      - name: Build release
+      - name: Build
         run: |
           cargo install cross
           cross build --release --target ${{ matrix.target }}
@@ -66,13 +66,13 @@ jobs:
             mv target/${{ matrix.target }}/release/$binary${{ matrix.file-ext }} artifacts/
           done
 
-      - name: Create a compressed package
+      - name: Compressed
         run: |
           cd artifacts
           tar -czvf ombrac-${{ matrix.arch-name }}.tar.gz ombrac-client${{ matrix.file-ext }} ombrac-server${{ matrix.file-ext }}
           openssl dgst -sha256 -r ombrac-${{ matrix.arch-name }}.tar.gz > ombrac-${{ matrix.arch-name }}.tar.gz.sha256sum
 
-      - name: Release binaries
+      - name: Release
         uses: ncipollo/release-action@main
         with:
           artifacts: "artifacts/*"

@@ -12,3 +12,12 @@ pre-build = [
     "apt install --assume-yes build-essential libclang1 golang nasm wine",
     "apt install --assume-yes libclang-10-dev clang-10"
 ]
+
+[target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:main"
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
