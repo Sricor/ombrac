@@ -69,11 +69,13 @@ jobs:
       - name: Compressed
         run: |
           cd artifacts
-          tar -czvf ombrac-${{ matrix.arch-name }}.tar.gz ombrac-client${{ matrix.file-ext }} ombrac-server${{ matrix.file-ext }}
+          tar -czvf ombrac-${{ matrix.arch-name }}.tar.gz ./*
           openssl dgst -sha256 -r ombrac-${{ matrix.arch-name }}.tar.gz > ombrac-${{ matrix.arch-name }}.tar.gz.sha256sum
 
       - name: Release
         uses: ncipollo/release-action@main
         with:
-          artifacts: "artifacts/*"
+          artifacts: |
+            artifacts/ombrac-${{ matrix.arch-name }}.tar.gz
+            artifacts/ombrac-${{ matrix.arch-name }}.tar.gz.sha256sum
           allowUpdates: true
