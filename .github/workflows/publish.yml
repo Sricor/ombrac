@@ -1,4 +1,4 @@
-name: publish
+name: Publish
 
 on:
   release:
@@ -10,8 +10,7 @@ jobs:
     name: publish
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@main
+      - uses: actions/checkout@main
         with:
           fetch-depth: 0
 
