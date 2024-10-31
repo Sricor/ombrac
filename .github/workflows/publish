@@ -1,0 +1,29 @@
+name: publish
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-workspaces
+        run: |
+          cargo install cargo-workspaces
+  
+      - name: Publish
+        run: |
+          cargo workspaces publish
