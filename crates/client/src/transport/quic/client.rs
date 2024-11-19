@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, net::SocketAddr};
 
 use ombrac_protocol::Provider;
 use tokio::sync::mpsc::Receiver;
@@ -12,7 +12,7 @@ pub mod impl_s2n_quic {
     use s2n_quic::provider::congestion_controller;
     use s2n_quic::provider::limits;
     use s2n_quic::stream::BidirectionalStream;
-    use s2n_quic::Client;
+    use s2n_quic::client::{Client, Connect};
 
     use connection::impl_s2n_quic::connection;
     use stream::impl_s2n_quic::stream;
@@ -75,8 +75,10 @@ pub mod impl_s2n_quic {
                 controller.build()
             };
 
+            let (bind, address, name) = resolve_address(&config)?;
+
             let client = Client::builder()
-                .with_io(config.bind)?
+                .with_io(bind)?
                 .with_limits(limits)?
                 .with_congestion_controller(controller)?;
 
@@ -85,7 +87,7 @@ pub mod impl_s2n_quic {
                 None => client.start()?,
             };
 
-            let connection = connection(client, config.server_name, config.server_address).await;
+            let connect = Connect::new(address).with_server_name(name);
 
             let stream = stream(
                 connection,
@@ -99,4 +101,36 @@ pub mod impl_s2n_quic {
             Ok(Self { stream })
         }
     }
+}
+
+fn resolve_address(cfg: &Config) -> Result<(SocketAddr, SocketAddr, String), Box<dyn Error>> {
+    use std::net::SocketAddr;
+    use std::net::ToSocketAddrs;
+
+    let pos = cfg.server_address.rfind(':').ok_or(format!("invalid address {}", cfg.server_address))?;
+
+    let server_name = match cfg.server_name.clone() {
+        Some(value) => value,
+        None => {
+            String::from(&cfg.server_address[..pos])
+        }
+    };
+
+    let server_address = cfg.server_address
+        .to_socket_addrs()?
+        .nth(0)
+        .ok_or(format!("unable to resolve address {}", cfg.server_address))?;
+
+    let bind_address = match cfg.bind {
+        Some(value) => value,
+        None => {
+            let address = match server_address {
+                SocketAddr::V4(_) => "0.0.0.0:0",
+                SocketAddr::V6(_) => "[::]:0",
+            };
+            address.parse().expect("failed to parse socket address")
+        }
+    };
+
+    Ok((bind_address, server_address, server_name))
 }

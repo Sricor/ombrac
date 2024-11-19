@@ -85,4 +85,12 @@ pub mod impl_s2n_quic {
 
         receiver
     }
+
+    fn ed_stream(
+        mut connection: Receiver<NoiseConnection>,
+        max_multiplex: u64,
+        max_multiplex_interval: (u64, Duration),
+    ) {
+        
+    }
 }
