@@ -18,6 +18,8 @@ pub mod impl_s2n_quic {
     use stream::impl_s2n_quic::stream;
     use tokio::sync::mpsc;
 
+    use crate::info;
+
     use super::*;
 
     pub struct NoiseQuic {
@@ -98,7 +100,9 @@ pub mod impl_s2n_quic {
 
                     let mut connection = client.connect(connect).await.unwrap();
 
-                    let stream = connection.accept_bidirectional_stream().await.unwrap().unwrap();
+                    let stream = connection.open_bidirectional_stream().await.unwrap();
+
+                    info!("connection {} open stream {}", connection.id(), stream.id());
 
                     if sender.send(stream).await.is_err() {
                         break;
