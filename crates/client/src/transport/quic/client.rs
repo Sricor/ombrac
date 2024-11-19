@@ -18,6 +18,7 @@ pub mod impl_s2n_quic {
     use stream::impl_s2n_quic::stream;
     use tokio::sync::mpsc;
 
+    use crate::error;
     use crate::info;
 
     use super::*;
@@ -100,12 +101,20 @@ pub mod impl_s2n_quic {
 
                     let mut connection = client.connect(connect).await.unwrap();
 
-                    let stream = connection.open_bidirectional_stream().await.unwrap();
+                    'stream: loop {
+                        let stream = match connection.open_bidirectional_stream().await {
+                            Ok(value) => value,
+                            Err(e) => {
+                                error!("connection {} open stream error {:?}", connection.id(), e);
+                                break 'stream;
+                            }
+                        };
 
-                    info!("connection {} open stream {}", connection.id(), stream.id());
-
-                    if sender.send(stream).await.is_err() {
-                        break;
+                        info!("connection {} open stream {}", connection.id(), stream.id());
+    
+                        if sender.send(stream).await.is_err() {
+                            break;
+                        }
                     }
                 }
             });
