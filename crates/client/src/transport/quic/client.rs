@@ -16,6 +16,7 @@ pub mod impl_s2n_quic {
 
     use connection::impl_s2n_quic::connection;
     use stream::impl_s2n_quic::stream;
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -65,40 +66,47 @@ pub mod impl_s2n_quic {
                 limits
             };
 
-            let controller = {
-                let mut controller = congestion_controller::bbr::Builder::default();
 
-                if let Some(value) = config.initial_congestion_window {
-                    controller = controller.with_initial_congestion_window(value);
+
+            let (sender, receiver) = mpsc::channel(1);
+
+            tokio::spawn(async move {
+                loop {
+                    let controller = {
+                        let mut controller = congestion_controller::bbr::Builder::default();
+        
+                        if let Some(value) = config.initial_congestion_window {
+                            controller = controller.with_initial_congestion_window(value);
+                        }
+        
+                        controller.build()
+                    };
+
+                    let (bind_address, server_address, server_name) = resolve_address(&config).unwrap();
+    
+                    let connect = Connect::new(server_address).with_server_name(server_name);
+    
+                    let client = Client::builder()
+                        .with_io(bind_address).unwrap()
+                        .with_limits(limits).unwrap()
+                        .with_congestion_controller(controller).unwrap();
+    
+                    let client = match &config.tls_cert {
+                        Some(path) => client.with_tls(Path::new(path)).unwrap().start().unwrap(),
+                        None => client.start().unwrap(),
+                    };
+
+                    let mut connection = client.connect(connect).await.unwrap();
+
+                    let stream = connection.accept_bidirectional_stream().await.unwrap().unwrap();
+
+                    if sender.send(stream).await.is_err() {
+                        break;
+                    }
                 }
+            });
 
-                controller.build()
-            };
-
-            let (bind, address, name) = resolve_address(&config)?;
-
-            let client = Client::builder()
-                .with_io(bind)?
-                .with_limits(limits)?
-                .with_congestion_controller(controller)?;
-
-            let client = match &config.tls_cert {
-                Some(path) => client.with_tls(Path::new(path))?.start()?,
-                None => client.start()?,
-            };
-
-            let connect = Connect::new(address).with_server_name(name);
-
-            let stream = stream(
-                connection,
-                config.max_multiplex.unwrap_or(0),
-                config
-                    .max_multiplex_interval
-                    .unwrap_or((16, Duration::from_secs(60))),
-            )
-            .await;
-
-            Ok(Self { stream })
+            Ok(Self { stream: receiver })
         }
     }
 }
