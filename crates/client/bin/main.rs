@@ -163,7 +163,7 @@ fn socks_config_from_args(args: &Args) -> Result<SocksConfig, Box<dyn Error>> {
 }
 
 fn quic_config_from_args(args: &Args) -> Result<QuicConfig, Box<dyn Error>> {
-    let mut config = QuicConfig::with_address(args.server_address.to_string())?;
+    let mut config = QuicConfig::new::<std::net::SocketAddr>(args.server_address.clone().into());
 
     if let Some(bind) = args.bind {
         config = config.with_bind(bind);
