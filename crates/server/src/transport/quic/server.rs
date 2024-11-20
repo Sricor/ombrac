@@ -8,6 +8,7 @@ use super::{connection, stream, Config};
 pub mod impl_s2n_quic {
     use std::path::Path;
 
+    use ombrac_protocol::custom_congestion_controller;
     use s2n_quic::provider::congestion_controller;
     use s2n_quic::provider::limits;
     use s2n_quic::stream::BidirectionalStream;
@@ -65,13 +66,9 @@ pub mod impl_s2n_quic {
             };
 
             let controller = {
-                let mut controller = congestion_controller::bbr::Builder::default();
+                let controller = custom_congestion_controller::MyCongestionControllerEndpoint::default();
 
-                if let Some(value) = config.initial_congestion_window {
-                    controller = controller.with_initial_congestion_window(value);
-                }
-
-                controller.build()
+                controller
             };
 
             let server = Server::builder()

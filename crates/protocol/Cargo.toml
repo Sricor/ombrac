@@ -9,7 +9,7 @@ repository.workspace = true
 [features]
 default = []
 udp = ["tokio/sync"]
-s2n-quic = ["dep:s2n-quic"]
+s2n-quic = ["dep:s2n-quic", "s2n-quic/unstable-congestion-controller"]
 
 [dependencies]
 bytes = { workspace = true }

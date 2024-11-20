@@ -9,6 +9,7 @@ pub mod impl_s2n_quic {
     use std::path::Path;
     use std::time::Duration;
 
+    use ombrac_protocol::custom_congestion_controller;
     use s2n_quic::provider::congestion_controller;
     use s2n_quic::provider::limits;
     use s2n_quic::stream::BidirectionalStream;
@@ -76,13 +77,9 @@ pub mod impl_s2n_quic {
             tokio::spawn(async move {
                 loop {
                     let controller = {
-                        let mut controller = congestion_controller::bbr::Builder::default();
-        
-                        if let Some(value) = config.initial_congestion_window {
-                            controller = controller.with_initial_congestion_window(value);
-                        }
-        
-                        controller.build()
+                        let controller = custom_congestion_controller::MyCongestionControllerEndpoint::default();
+
+                        controller
                     };
 
                     let (bind_address, server_address, server_name) = resolve_address(&config).unwrap();
