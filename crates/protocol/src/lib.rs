@@ -53,7 +53,7 @@ pub mod custom_congestion_controller {
         }
 
         fn is_congestion_limited(&self) -> bool {
-            self.congestion_window < self.bytes_in_flight
+            false
         }
 
         fn requires_fast_retransmission(&self) -> bool {
@@ -68,7 +68,7 @@ pub mod custom_congestion_controller {
             rtt_estimator: &RttEstimator,
             publisher: &mut Pub,
         ) -> Self::PacketInfo {
-            self.bytes_in_flight += sent_bytes as u32;
+            // self.bytes_in_flight += sent_bytes as u32;
         }
 
         fn on_rtt_update<Pub: Publisher>(
@@ -91,8 +91,8 @@ pub mod custom_congestion_controller {
             ack_receive_time: Timestamp,
             publisher: &mut Pub,
         ) {
-            self.bytes_in_flight -= bytes_acknowledged as u32;
-            self.congestion_window += bytes_acknowledged as u32;
+            // self.bytes_in_flight -= bytes_acknowledged as u32;
+            // self.congestion_window += bytes_acknowledged as u32;
         }
 
         fn on_packet_lost<Pub: Publisher>(
@@ -111,8 +111,8 @@ pub mod custom_congestion_controller {
             // controller should take a more nuanced approach. This reduction would typically only
             // occur once for the initial lost packet, and subsequent lost packets would not lead to
             // further reduction.
-            self.bytes_in_flight -= lost_bytes;
-            self.congestion_window = (self.congestion_window as f32 * 0.5) as u32;
+            // self.bytes_in_flight -= lost_bytes;
+            // self.congestion_window = (self.congestion_window as f32 * 0.5) as u32;
         }
 
         fn on_explicit_congestion<Pub: Publisher>(
@@ -129,7 +129,7 @@ pub mod custom_congestion_controller {
         }
 
         fn on_packet_discarded<Pub: Publisher>(&mut self, bytes_sent: usize, publisher: &mut Pub) {
-            self.bytes_in_flight -= bytes_sent as u32;
+            // self.bytes_in_flight -= bytes_sent as u32;
         }
 
         fn earliest_departure_time(&self) -> Option<Timestamp> {
@@ -152,7 +152,7 @@ pub mod custom_congestion_controller {
         ) -> Self::CongestionController {
             MyCongestionController {
                 // Specify the initial congestion window
-                congestion_window: 10 * path_info.max_datagram_size as u32,
+                congestion_window: 16 * path_info.max_datagram_size as u32,
                 bytes_in_flight: 0,
             }
         }
