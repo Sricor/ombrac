@@ -111,8 +111,8 @@ pub mod custom_congestion_controller {
             // controller should take a more nuanced approach. This reduction would typically only
             // occur once for the initial lost packet, and subsequent lost packets would not lead to
             // further reduction.
-            // self.bytes_in_flight -= lost_bytes;
-            // self.congestion_window = (self.congestion_window as f32 * 0.5) as u32;
+            self.bytes_in_flight -= lost_bytes;
+            self.congestion_window = (self.congestion_window as f32 * 0.5) as u32;
         }
 
         fn on_explicit_congestion<Pub: Publisher>(
@@ -152,7 +152,7 @@ pub mod custom_congestion_controller {
         ) -> Self::CongestionController {
             MyCongestionController {
                 // Specify the initial congestion window
-                congestion_window: 50 * path_info.max_datagram_size as u32,
+                congestion_window: 10 * path_info.max_datagram_size as u32,
                 bytes_in_flight: 0,
             }
         }
