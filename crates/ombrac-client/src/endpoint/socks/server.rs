@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::io::{Error, Result};
 
-use ombrac_protocol::request::{Address, Request};
-use ombrac_protocol::Provider;
+use ombrac::request::{Address, Request};
+use ombrac::Provider;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver};
 
@@ -68,7 +68,7 @@ mod socks5 {
     use super::*;
 
     impl SocksServer {
-        pub async fn handle(mut stream: TcpStream) -> Result<Option<(TcpStream, Request)>> {
+        pub async fn handler(mut stream: TcpStream) -> Result<(TcpStream, Request)> {
             use socks_lib::Streamable;
 
             let methods = <Vec<Socks5Method> as Streamable>::read(&mut stream).await?;
@@ -116,7 +116,7 @@ mod socks5 {
                         Socks5Address::Domain(domain, port) => Address::Domain(domain, port),
                     };
 
-                    return Ok(Some((stream, Request::TcpConnect(address))));
+                    return Ok((stream, Request::TcpConnect(address)));
                 }
 
                 #[cfg(feature = "udp")]
@@ -135,10 +135,10 @@ mod socks5 {
                         udp::hanlde(inbound, request_sender, response_receiver).await
                     });
 
-                    return Ok(Some((
+                    return Ok((
                         stream,
                         Request::UdpAssociate(Some((response_sender, request_receiver))),
-                    )));
+                    ));
                 }
 
                 _ => {
@@ -174,7 +174,7 @@ mod socks5 {
 
     #[cfg(feature = "udp")]
     pub mod udp {
-        use ombrac_protocol::request::udp::Datagram;
+        use ombrac::request::udp::Datagram;
         use socks_lib::socks5::UdpPacket as Socks5UdpPacket;
         use socks_lib::{Streamable, ToBytes};
         use tokio::net::UdpSocket;

@@ -8,7 +8,6 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::io::{Streamable, ToBytes};
-use crate::Resolver;
 
 #[rustfmt::skip]
 mod consts {
@@ -103,23 +102,18 @@ pub enum Address {
 }
 
 impl Address {
-    pub async fn to_socket_address<R>(self, resolver: &R) -> Result<SocketAddr>
-    where
-        R: Resolver,
-    {
-        let socket_address = match self {
-            Self::Domain(domain, port) => resolver.lookup(&domain, port).await?.into(),
-            Self::IPv4(addr) => addr.into(),
-            Self::IPv6(addr) => addr.into(),
-        };
-
-        Ok(socket_address)
-    }
-
     pub fn from_socket_address(addr: SocketAddr) -> Self {
         match addr {
             SocketAddr::V4(addr) => Self::IPv4(addr),
             SocketAddr::V6(addr) => Self::IPv6(addr),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Domain(_, port) => *port,
+            Self::IPv4(addr) => addr.port(),
+            Self::IPv6(addr) => addr.port(),
         }
     }
 }

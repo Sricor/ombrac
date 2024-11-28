@@ -1,36 +1,23 @@
 use std::error::Error;
 
-use ombrac_protocol::Provider;
-use tokio::sync::mpsc::Receiver;
+use crate::Server;
 
-use super::{connection, stream, Config};
+use super::Config;
 
-pub mod impl_s2n_quic {
+use ombrac::Server as OmbracServer;
+
+mod impl_s2n_quic {
     use std::path::Path;
-    use std::time::Duration;
 
     use s2n_quic::provider::congestion_controller;
     use s2n_quic::provider::limits;
-    use s2n_quic::stream::BidirectionalStream;
-    use s2n_quic::Client;
-
-    use connection::impl_s2n_quic::connection;
-    use stream::impl_s2n_quic::stream;
+    use s2n_quic::stream::BidirectionalStream as Stream;
+    use s2n_quic::Server as NoiseServer;
 
     use super::*;
 
-    pub struct NoiseQuic {
-        stream: Receiver<BidirectionalStream>,
-    }
-
-    impl Provider<BidirectionalStream> for NoiseQuic {
-        async fn fetch(&mut self) -> Option<BidirectionalStream> {
-            self.stream.recv().await
-        }
-    }
-
-    impl NoiseQuic {
-        pub async fn with(config: Config) -> Result<Self, Box<dyn Error>> {
+    impl Server<NoiseServer> {
+        pub fn with(config: Config) -> Result<Self, Box<dyn Error>> {
             let limits = {
                 let mut limits = limits::Limits::new();
 
@@ -75,28 +62,26 @@ pub mod impl_s2n_quic {
                 controller.build()
             };
 
-            let client = Client::builder()
-                .with_io(config.bind)?
+            let server = NoiseServer::builder()
+                .with_io(config.listen)?
                 .with_limits(limits)?
-                .with_congestion_controller(controller)?;
+                .with_congestion_controller(controller)?
+                .with_tls((Path::new(&config.tls_cert), Path::new(&config.tls_key)))?
+                .start()?;
 
-            let client = match &config.tls_cert {
-                Some(path) => client.with_tls(Path::new(path))?.start()?,
-                None => client.start()?,
-            };
+            Ok(Self { inner: server })
+        }
+    }
 
-            let connection = connection(client, config.server_name, config.server_address).await;
-
-            let stream = stream(
-                connection,
-                config.max_multiplex.unwrap_or(0),
-                config
-                    .max_multiplex_interval
-                    .unwrap_or((16, Duration::from_secs(60))),
-            )
-            .await;
-
-            Ok(Self { stream })
+    impl OmbracServer<Stream> for Server<NoiseServer> {
+        async fn listen(mut self) -> () {
+            while let Some(mut connection) = self.inner.accept().await {
+                tokio::spawn(async move {
+                    while let Ok(Some(stream)) = connection.accept_bidirectional_stream().await {
+                        tokio::spawn(async move { Self::handler(stream) });
+                    }
+                });
+            }
         }
     }
 }

@@ -1,27 +1,23 @@
-mod connection;
 mod server;
-mod stream;
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
-pub use server::impl_s2n_quic::NoiseQuic;
-
 pub struct Config {
-    listen: SocketAddr,
+    pub(crate) listen: SocketAddr,
 
-    tls_key: String,
-    tls_cert: String,
+    pub(crate) tls_key: String,
+    pub(crate) tls_cert: String,
 
-    initial_congestion_window: Option<u32>,
+    pub(crate) initial_congestion_window: Option<u32>,
 
-    max_handshake_duration: Option<Duration>,
-    max_idle_timeout: Option<Duration>,
-    max_keep_alive_period: Option<Duration>,
-    max_open_bidirectional_streams: Option<u64>,
+    pub(crate) max_handshake_duration: Option<Duration>,
+    pub(crate) max_idle_timeout: Option<Duration>,
+    pub(crate) max_keep_alive_period: Option<Duration>,
+    pub(crate) max_open_bidirectional_streams: Option<u64>,
 
-    bidirectional_local_data_window: Option<u64>,
-    bidirectional_remote_data_window: Option<u64>,
+    pub(crate) bidirectional_local_data_window: Option<u64>,
+    pub(crate) bidirectional_remote_data_window: Option<u64>,
 }
 
 impl Config {

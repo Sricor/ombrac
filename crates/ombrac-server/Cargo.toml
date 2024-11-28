@@ -1,32 +1,30 @@
 [package]
-name = "ombrac-client"
+name = "ombrac-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+keywords.workspace = true
 repository.workspace = true
+description.workspace = true
 
 [[bin]]
-name = "ombrac-client"
+name = "ombrac-server"
 path = "bin/main.rs"
 required-features = ["binary"]
 
 [features]
 default = [
-    "endpoint-default",
     "transport-default",
     "tracing",
     "udp",
 ]
 
-udp = ["ombrac-protocol/udp"]
+udp = ["ombrac/udp"]
 tracing = ["dep:tracing"]
 
-endpoint-default = ["endpoint-socks"]
-endpoint-socks = ["socks-lib"]
-
 transport-default = ["transport-quic"]
-transport-quic = ["s2n-quic", "aws-lc-rs", "ombrac-protocol/s2n-quic"]
+transport-quic = ["s2n-quic", "aws-lc-rs", "ombrac/s2n-quic"]
 
 binary = [
     "clap",
@@ -36,15 +34,13 @@ binary = [
 ]
 
 [dependencies]
-ombrac-protocol = { workspace = true }
+ombrac = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync", "io-util"] }
 clap = { workspace = true, features = ["std", "derive", "color", "help", "usage", "error-context", "suggestions"], optional = true }
 s2n-quic = { workspace = true, features = ["provider-tls-default", "provider-address-token-default"], optional = true }
 aws-lc-rs = { workspace = true, features = ["bindgen"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["ansi"], optional = true }
-
-socks-lib = { workspace = true, optional = true }
 
 [lints]
 workspace = true
