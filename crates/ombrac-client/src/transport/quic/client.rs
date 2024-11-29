@@ -1,17 +1,13 @@
 use std::error::Error;
-use std::io::{Error as ioError, Result as ioResult};
-
-use ombrac::Client as OmbracClient;
+use std::net::SocketAddr;
+use std::path::Path;
 
 use crate::Client;
-use crate::{debug, error};
+use crate::{error, info};
 
 use super::Config;
 
 pub mod impl_s2n_quic {
-    use std::net::SocketAddr;
-    use std::path::Path;
-
     use s2n_quic::client::Connect;
     use s2n_quic::stream::BidirectionalStream as Stream;
     use s2n_quic::Connection;
@@ -24,32 +20,6 @@ pub mod impl_s2n_quic {
     }
 
     impl NoiseClient {
-        async fn update_connection(&mut self) -> ioResult<()> {
-            let mut connection = match connection_with_config(&self.config).await {
-                Ok(value) => value,
-                Err(error) => return Err(ioError::other(error.to_string())),
-            };
-
-            if let Err(error) = connection.keep_alive(true) {
-                return Err(ioError::other(format!(
-                    "failed to keep alive the connection {}. {}",
-                    connection.id(),
-                    error
-                )));
-            }
-
-            debug!(
-                "{:?} establish connection {} with {:?}",
-                connection.local_addr(),
-                connection.id(),
-                connection.remote_addr()
-            );
-
-            self.connection = connection;
-
-            Ok(())
-        }
-
         async fn stream(&mut self) -> Option<Stream> {
             loop {
                 let stream = match self.connection.open_bidirectional_stream().await {
@@ -61,9 +31,24 @@ pub mod impl_s2n_quic {
                             _error
                         );
 
-                        if let Err(_err) = self.update_connection().await {
-                            error!("{_err}");
-                        }
+                        self.connection = match connection_with_config(&self.config).await {
+                            Ok(connection) => {
+                                info!(
+                                    "{:?} establish connection {} with {:?}",
+                                    connection.local_addr(),
+                                    connection.id(),
+                                    connection.remote_addr()
+                                );
+
+                                connection
+                            }
+
+                            Err(_error) => {
+                                error!("{_error}");
+
+                                continue;
+                            }
+                        };
 
                         continue;
                     }
@@ -74,7 +59,7 @@ pub mod impl_s2n_quic {
         }
     }
 
-    impl OmbracClient<Stream> for Client<NoiseClient> {
+    impl ombrac::Client<Stream> for Client<NoiseClient> {
         async fn outbound(&mut self) -> Option<Stream> {
             self.inner.stream().await
         }
@@ -84,7 +69,9 @@ pub mod impl_s2n_quic {
         pub async fn with(config: Config) -> Result<Self, Box<dyn Error>> {
             let connection = connection_with_config(&config).await?;
 
-            Ok(Self { inner: NoiseClient {config, connection} })
+            Ok(Self {
+                inner: NoiseClient { config, connection },
+            })
         }
     }
 
@@ -159,18 +146,28 @@ pub mod impl_s2n_quic {
 
         let connect = Connect::new(server_socket_address).with_server_name(server_name);
 
-        let connection = match client.connect(connect).await {
+        let mut connection = match client.connect(connect).await {
             Ok(value) => value,
             Err(error) => {
                 return Err(format!(
-                    "{:?} failed to establish connection with {}. {}",
-                    client.local_addr(),
+                    "{} failed to establish connection with {}, {}. {}",
+                    client.local_addr()?,
+                    server_name,
                     server_socket_address,
                     error
                 )
                 .into());
             }
         };
+
+        if let Err(error) = connection.keep_alive(true) {
+            return Err(format!(
+                "failed to keep alive the connection {}. {}",
+                connection.id(),
+                error
+            )
+            .into());
+        }
 
         Ok(connection)
     }

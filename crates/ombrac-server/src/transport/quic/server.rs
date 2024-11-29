@@ -4,8 +4,6 @@ use crate::Server;
 
 use super::Config;
 
-use ombrac::Server as OmbracServer;
-
 mod impl_s2n_quic {
     use std::path::Path;
 
@@ -73,7 +71,7 @@ mod impl_s2n_quic {
         }
     }
 
-    impl OmbracServer<Stream> for Server<NoiseServer> {
+    impl ombrac::Server<Stream> for Server<NoiseServer> {
         async fn listen(mut self) -> () {
             while let Some(mut connection) = self.inner.accept().await {
                 tokio::spawn(async move {

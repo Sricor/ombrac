@@ -16,11 +16,9 @@ required-features = ["binary"]
 [features]
 default = [
     "transport-default",
-    "tracing",
-    "udp",
+    "tracing"
 ]
 
-udp = ["ombrac/udp"]
 tracing = ["dep:tracing"]
 
 transport-default = ["transport-quic"]

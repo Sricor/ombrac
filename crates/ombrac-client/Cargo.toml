@@ -17,11 +17,9 @@ required-features = ["binary"]
 default = [
     "endpoint-default",
     "transport-default",
-    "tracing",
-    "udp",
+    "tracing"
 ]
 
-udp = ["ombrac/udp"]
 tracing = ["dep:tracing"]
 
 endpoint-default = ["endpoint-socks"]

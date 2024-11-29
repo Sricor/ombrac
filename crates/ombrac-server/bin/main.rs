@@ -1,7 +1,7 @@
 use clap::Parser;
 use ombrac::Server as OmbracServer;
 use ombrac_server::transport::quic::Config as QuicConfig;
-use ombrac_server::Server as NoiseServer;
+use ombrac_server::Server;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -67,9 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let server = NoiseServer::with(quic_config_from_args(&args)?)?;
+    let server = Server::with(quic_config_from_args(&args)?)?;
 
-    tracing::info!("Server listening on {}", args.listen);
+    tracing::info!("server listening on {}", args.listen);
 
     server.listen().await;
 

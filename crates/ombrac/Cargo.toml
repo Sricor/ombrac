@@ -8,7 +8,6 @@ repository.workspace = true
 
 [features]
 default = []
-udp = ["tokio/sync"]
 s2n-quic = ["dep:s2n-quic"]
 
 [dependencies]
@@ -18,7 +17,6 @@ s2n-quic = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-
 
 [lints]
 workspace = true

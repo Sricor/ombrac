@@ -1,111 +1,35 @@
-use std::marker::PhantomData;
+use std::future::Future;
+use std::io;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Result};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::io::{IntoSplit, Streamable};
-use crate::request::Request;
-use crate::Provider;
+use crate::request::{Address, Request};
 
-pub struct Client<L, R, LS, RS> {
-    local: L,
-    remote: R,
-    _local_stream: PhantomData<LS>,
-    _remote_stream: PhantomData<RS>,
-}
-
-impl<L, R, LS, RS> Client<L, R, LS, RS>
+pub trait Client<Stream>: Send
 where
-    L: Provider<(LS, Request)>,
-    R: Provider<RS>,
-    LS: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
-    RS: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    Stream: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 {
-    pub fn with(local: L, remote: R) -> Self {
-        Self {
-            local,
-            remote,
-            _local_stream: PhantomData,
-            _remote_stream: PhantomData,
-        }
-    }
+    fn outbound(&mut self) -> impl Future<Output = Option<Stream>> + Send;
 
-    pub async fn start(&mut self) {
-        while let Some((local, request)) = self.local.fetch().await {
-            if let Some(remote) = self.remote.fetch().await {
-                tokio::spawn(async move { Self::handler(local, remote, request).await });
-            }
-        }
-    }
-
-    async fn handler(mut local: LS, mut remote: RS, request: Request) -> Result<()> {
+    fn warp_tcp<S>(
+        inbound: S,
+        mut outbound: Stream,
+        address: Address,
+    ) -> impl Future<Output = io::Result<()>> + Send
+    where
+        S: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    {
         use crate::io::utils::copy_bidirectional;
 
-        <Request as Streamable>::write(&request, &mut remote).await?;
+        async move {
+            <Request as Streamable>::write(&Request::TcpConnect(address), &mut outbound).await?;
 
-        match request {
-            Request::TcpConnect(_) => copy_bidirectional(local, remote).await?,
+            copy_bidirectional(inbound, outbound).await?;
 
-            #[cfg(feature = "udp")]
-            Request::UdpAssociate(channel) => {
-                if let Some((sender, receiver)) = channel {
-                    tokio::select! {
-                        result = local.read_u8() => { result?; }
-                        result = udp_associate::relay(remote, sender, receiver) => { result?; }
-                    }
-                }
-            }
+            Ok(())
         }
-
-        Ok(())
-    }
-}
-
-#[cfg(feature = "udp")]
-mod udp_associate {
-    use std::io::Error;
-
-    use tokio::sync::mpsc::{Receiver, Sender};
-
-    use super::*;
-    use crate::request::udp::Datagram;
-
-    pub async fn relay(
-        stream: impl IntoSplit,
-        response_sender: Sender<Datagram>,
-        mut request_receiver: Receiver<Datagram>,
-    ) -> Result<()> {
-        let (read_stream, write_stream) = stream.into_split();
-
-        tokio::try_join!(
-            relay_request(write_stream, &mut request_receiver),
-            relay_response(read_stream, &response_sender),
-        )?;
-
-        Ok(())
     }
 
-    async fn relay_request<S>(mut stream: S, receiver: &mut Receiver<Datagram>) -> Result<()>
-    where
-        S: AsyncWriteExt + Unpin + Send,
-    {
-        while let Some(datagram) = receiver.recv().await {
-            <Datagram as Streamable>::write(&datagram, &mut stream).await?
-        }
-
-        Err(Error::other("failed to receive datagram"))
-    }
-
-    async fn relay_response<S>(mut stream: S, sender: &Sender<Datagram>) -> Result<()>
-    where
-        S: AsyncReadExt + Unpin + Send,
-    {
-        loop {
-            let datagram = <Datagram as Streamable>::read(&mut stream).await?;
-            if sender.send(datagram).await.is_err() {
-                break;
-            }
-        }
-
-        Err(Error::other("failed to send datagram"))
-    }
+    fn warp_udp() {}
 }

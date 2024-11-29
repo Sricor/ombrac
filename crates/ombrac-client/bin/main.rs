@@ -2,8 +2,9 @@ use std::error::Error;
 use std::net::SocketAddr;
 
 use clap::Parser;
+use ombrac_client::endpoint::socks::{Config as SocksServerConfig, Server as SocksServer};
 use ombrac_client::transport::quic::Config as QuicConfig;
-use ombrac_client::{Client as NoiseClient, SocksServer, Config as SocksServerConfig};
+use ombrac_client::Client;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -84,11 +85,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let transport = NoiseClient::with(quic_config_from_args(&args)?).await?;
+    let transport = Client::with(quic_config_from_args(&args)?).await?;
 
     let endpoint = SocksServer::with(socks_config_from_args(&args)?, transport);
 
-    endpoint.listen().await;
+    endpoint.listen().await?;
 
     Ok(())
 }
