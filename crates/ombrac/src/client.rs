@@ -30,6 +30,4 @@ where
             Ok(())
         }
     }
-
-    fn warp_udp() {}
 }

@@ -22,7 +22,7 @@ struct Args {
     // Transport QUIC
     /// Bind local address
     #[clap(long, help_heading = "Transport QUIC", value_name = "ADDR")]
-    bind: Option<SocketAddr>,
+    bind: Option<String>,
 
     /// Name of the server to connect to.
     #[clap(long, help_heading = "Transport QUIC", value_name = "STR")]
@@ -104,6 +104,18 @@ fn quic_config_from_args(args: &Args) -> Result<QuicConfig, Box<dyn std::error::
     use std::time::Duration;
 
     let mut config = QuicConfig::new(args.server_address.clone());
+
+    if let Some(value) = &args.bind {
+        config = config.with_bind(value.to_string());
+    }
+
+    if let Some(value) = &args.server_name {
+        config = config.with_server_name(value.to_string());
+    }
+
+    if let Some(value) = &args.tls_cert {
+        config = config.with_tls_cert(value.to_string());
+    }
 
     if let Some(value) = args.initial_congestion_window {
         config = config.with_initial_congestion_window(value);
