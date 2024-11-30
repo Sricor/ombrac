@@ -85,9 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let transport = Client::with(quic_config_from_args(&args)?).await?;
+    let transport = Client::new(quic_config_from_args(&args)?).await?;
 
-    let endpoint = SocksServer::with(socks_config_from_args(&args)?, transport);
+    let endpoint = SocksServer::new(socks_config_from_args(&args)?, transport);
 
     endpoint.listen().await?;
 

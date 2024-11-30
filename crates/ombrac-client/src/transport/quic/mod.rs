@@ -1,6 +1,7 @@
 mod client;
 
-use std::io::{Error, Result};
+use std::error::Error;
+use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -90,29 +91,52 @@ impl Config {
         self
     }
 
-    fn server_name(&self) -> Result<&str> {
+    fn server_name(&self) -> io::Result<&str> {
         match &self.server_name {
             Some(value) => Ok(value),
             None => {
-                let pos = self.server_address.rfind(':').ok_or(Error::other(format!(
-                    "invalid address {}",
-                    self.server_address
-                )))?;
+                let pos = self
+                    .server_address
+                    .rfind(':')
+                    .ok_or(io::Error::other(format!(
+                        "invalid address {}",
+                        self.server_address
+                    )))?;
 
                 Ok(&self.server_address[..pos])
             }
         }
     }
 
-    async fn server_socket_address(&self) -> Result<SocketAddr> {
+    async fn server_socket_address(&self) -> io::Result<SocketAddr> {
         use tokio::net::lookup_host;
 
         lookup_host(&self.server_address)
             .await?
             .next()
-            .ok_or(Error::other(format!(
+            .ok_or(io::Error::other(format!(
                 "unable to resolve address '{}'",
                 self.server_address
             )))
+    }
+}
+
+mod impl_s2n_quic {
+    use super::*;
+
+    use super::client::impl_s2n_quic::*;
+
+    impl crate::Client<NoiseClient> {
+        pub async fn new(config: Config) -> Result<Self, Box<dyn Error>> {
+            Ok(Self {
+                inner: NoiseClient::new(config).await?,
+            })
+        }
+    }
+
+    impl ombrac::Client<Stream> for crate::Client<NoiseClient> {
+        async fn outbound(&mut self) -> Option<Stream> {
+            self.inner.stream().await
+        }
     }
 }

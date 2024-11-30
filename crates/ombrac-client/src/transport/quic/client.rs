@@ -1,26 +1,78 @@
 use std::error::Error;
-use std::net::SocketAddr;
 use std::path::Path;
 
-use crate::Client;
 use crate::{error, info};
 
 use super::Config;
 
-pub mod impl_s2n_quic {
-    use s2n_quic::client::Connect;
-    use s2n_quic::stream::BidirectionalStream as Stream;
+pub(crate) mod impl_s2n_quic {
+    use std::io;
+
+    use s2n_quic::client::{Client, Connect};
     use s2n_quic::Connection;
+
+    pub use s2n_quic::stream::BidirectionalStream as Stream;
 
     use super::*;
 
     pub struct NoiseClient {
         config: Config,
+        client: Client,
         connection: Connection,
     }
 
     impl NoiseClient {
-        async fn stream(&mut self) -> Option<Stream> {
+        pub async fn new(config: Config) -> Result<Self, Box<dyn Error>> {
+            let server_name = config.server_name()?;
+            let server_addr = config.server_socket_address().await?;
+            let client = s2n_client_with_config(&config).await?;
+            let connect = Connect::new(server_addr).with_server_name(server_name);
+            let connection = client.connect(connect).await?;
+
+            Ok(Self {
+                config,
+                client,
+                connection,
+            })
+        }
+
+        async fn update_connection(&mut self) -> io::Result<()> {
+            let server_name = self.config.server_name()?;
+            let server_addr = self.config.server_socket_address().await?;
+            let connect = Connect::new(server_addr).with_server_name(server_name);
+
+            let mut connection = match self.client.connect(connect).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(io::Error::other(format!(
+                        "{} failed to establish connection with {}, {}. {}",
+                        self.client.local_addr()?,
+                        server_name,
+                        server_addr,
+                        error
+                    )));
+                }
+            };
+
+            if let Err(error) = connection.keep_alive(true) {
+                return Err(io::Error::other(format!(
+                    "failed to keep alive the connection {}. {}",
+                    connection.id(),
+                    error
+                )));
+            };
+
+            info!(
+                "{:?} establish connection {} with {:?}",
+                connection.local_addr(),
+                connection.id(),
+                connection.remote_addr()
+            );
+
+            Ok(())
+        }
+
+        pub async fn stream(&mut self) -> Option<Stream> {
             loop {
                 let stream = match self.connection.open_bidirectional_stream().await {
                     Ok(stream) => stream,
@@ -31,23 +83,8 @@ pub mod impl_s2n_quic {
                             _error
                         );
 
-                        self.connection = match connection_with_config(&self.config).await {
-                            Ok(connection) => {
-                                info!(
-                                    "{:?} establish connection {} with {:?}",
-                                    connection.local_addr(),
-                                    connection.id(),
-                                    connection.remote_addr()
-                                );
-
-                                connection
-                            }
-
-                            Err(_error) => {
-                                error!("{_error}");
-
-                                continue;
-                            }
+                        if let Err(_error) = self.update_connection().await {
+                            error!("{_error}");
                         };
 
                         continue;
@@ -59,23 +96,7 @@ pub mod impl_s2n_quic {
         }
     }
 
-    impl ombrac::Client<Stream> for Client<NoiseClient> {
-        async fn outbound(&mut self) -> Option<Stream> {
-            self.inner.stream().await
-        }
-    }
-
-    impl Client<NoiseClient> {
-        pub async fn with(config: Config) -> Result<Self, Box<dyn Error>> {
-            let connection = connection_with_config(&config).await?;
-
-            Ok(Self {
-                inner: NoiseClient { config, connection },
-            })
-        }
-    }
-
-    async fn connection_with_config(config: &Config) -> Result<Connection, Box<dyn Error>> {
+    async fn s2n_client_with_config(config: &Config) -> Result<Client, Box<dyn Error>> {
         use s2n_quic::provider::congestion_controller;
         use s2n_quic::provider::limits;
 
@@ -123,15 +144,9 @@ pub mod impl_s2n_quic {
             controller.build()
         };
 
-        let server_name = config.server_name()?;
-        let server_socket_address = config.server_socket_address().await?;
-
         let bind_address = match &config.bind {
             Some(value) => value,
-            None => match server_socket_address {
-                SocketAddr::V4(_) => "0.0.0.0:0",
-                SocketAddr::V6(_) => "[::]:0",
-            },
+            None => "[::]:0",
         };
 
         let client = s2n_quic::Client::builder()
@@ -144,31 +159,6 @@ pub mod impl_s2n_quic {
             None => client.start()?,
         };
 
-        let connect = Connect::new(server_socket_address).with_server_name(server_name);
-
-        let mut connection = match client.connect(connect).await {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(format!(
-                    "{} failed to establish connection with {}, {}. {}",
-                    client.local_addr()?,
-                    server_name,
-                    server_socket_address,
-                    error
-                )
-                .into());
-            }
-        };
-
-        if let Err(error) = connection.keep_alive(true) {
-            return Err(format!(
-                "failed to keep alive the connection {}. {}",
-                connection.id(),
-                error
-            )
-            .into());
-        }
-
-        Ok(connection)
+        Ok(client)
     }
 }

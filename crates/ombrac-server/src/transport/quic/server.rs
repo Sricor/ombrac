@@ -16,7 +16,7 @@ mod impl_s2n_quic {
     use super::*;
 
     impl Server<NoiseServer> {
-        pub fn with(config: Config) -> Result<Self, Box<dyn Error>> {
+        pub fn new(config: Config) -> Result<Self, Box<dyn Error>> {
             let limits = {
                 let mut limits = limits::Limits::new();
 

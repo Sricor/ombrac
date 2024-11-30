@@ -31,7 +31,7 @@ impl Config {
 }
 
 impl<Client, Stream> Server<Client, Stream> {
-    pub fn with(config: Config, client: Client) -> Self {
+    pub fn new(config: Config, client: Client) -> Self {
         Self {
             config,
             client,
