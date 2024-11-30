@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::{error, info};
@@ -146,7 +147,10 @@ pub(crate) mod impl_s2n_quic {
 
         let bind_address = match &config.bind {
             Some(value) => value,
-            None => "[::]:0",
+            None => match config.server_socket_address().await? {
+                SocketAddr::V4(_) => "0.0.0.0:0",
+                SocketAddr::V6(_) => "[::]0",
+            },
         };
 
         let client = s2n_quic::Client::builder()
