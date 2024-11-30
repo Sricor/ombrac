@@ -51,7 +51,7 @@ where
         loop {
             let outbound = match self.client.outbound().await {
                 Some(value) => value,
-                None => return Ok(())
+                None => return Ok(()),
             };
 
             match listener.accept().await {
@@ -70,7 +70,9 @@ where
                             Request::TcpConnect(inbound, address) => {
                                 info!("TcpConnect {:?}", address);
 
-                                if let Err(_error) = Client::warp_tcp(inbound, outbound, address).await {
+                                if let Err(_error) =
+                                    Client::warp_tcp(inbound, outbound, address).await
+                                {
                                     error!("{_error}")
                                 }
                             }

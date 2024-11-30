@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use crate::info;
 use crate::Server;
 
 use super::Config;
@@ -75,8 +76,15 @@ mod impl_s2n_quic {
         async fn listen(mut self) -> () {
             while let Some(mut connection) = self.inner.accept().await {
                 tokio::spawn(async move {
+                    info!(
+                        "{:?} accept connection {} from {:?}",
+                        connection.server_name(),
+                        connection.id(),
+                        connection.remote_addr()
+                    );
+
                     while let Ok(Some(stream)) = connection.accept_bidirectional_stream().await {
-                        tokio::spawn(async move { Self::handler(stream) });
+                        tokio::spawn(async move { Self::handler(stream).await });
                     }
                 });
             }
