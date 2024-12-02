@@ -1,7 +1,8 @@
 use std::future::Future;
+use std::io;
 
 use bytes::BytesMut;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Result};
+pub use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
@@ -10,7 +11,7 @@ pub trait ToBytes {
 }
 
 pub trait Streamable {
-    fn write<T>(&self, stream: &mut T) -> impl Future<Output = Result<()>> + Send
+    fn write<T>(&self, stream: &mut T) -> impl Future<Output = io::Result<()>> + Send
     where
         Self: ToBytes + Send + Sync,
         T: AsyncWriteExt + Unpin + Send,
@@ -18,7 +19,7 @@ pub trait Streamable {
         async move { stream.write_all(&self.to_bytes()).await }
     }
 
-    fn read<T>(stream: &mut T) -> impl Future<Output = Result<Self>> + Send
+    fn read<T>(stream: &mut T) -> impl Future<Output = io::Result<Self>> + Send
     where
         Self: Sized,
         T: AsyncReadExt + Unpin + Send;
@@ -36,7 +37,7 @@ pub trait IntoSplit {
 pub(crate) mod utils {
     use super::*;
 
-    pub(crate) async fn copy_bidirectional<A, B>(a: A, b: B) -> Result<()>
+    pub(crate) async fn copy_bidirectional<A, B>(a: A, b: B) -> io::Result<()>
     where
         A: IntoSplit,
         B: IntoSplit,

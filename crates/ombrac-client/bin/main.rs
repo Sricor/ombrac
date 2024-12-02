@@ -2,8 +2,8 @@ use std::error::Error;
 use std::net::SocketAddr;
 
 use clap::Parser;
-use ombrac_client::endpoint::socks::{Config as SocksServerConfig, Server as SocksServer};
-use ombrac_client::transport::quic::Config as QuicConfig;
+use ombrac_client::endpoint::socks::Server as SocksServer;
+use ombrac_client::transport::quic::{Builder as QuicBuilder, Quic};
 use ombrac_client::Client;
 
 #[derive(Parser)]
@@ -17,7 +17,7 @@ struct Args {
         value_name = "ADDR",
         help_heading = "Endpoint SOCKS"
     )]
-    socks: String,
+    socks: SocketAddr,
 
     // Transport QUIC
     /// Bind local address
@@ -85,65 +85,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let transport = Client::new(quic_config_from_args(&args)?).await?;
+    let ombrac_client = Client::new(quic_from_args(&args)?);
 
-    let endpoint = SocksServer::new(socks_config_from_args(&args)?, transport);
-
-    endpoint.listen().await?;
+    SocksServer::listen(args.socks, ombrac_client).await?;
 
     Ok(())
 }
 
-fn socks_config_from_args(args: &Args) -> Result<SocksServerConfig, Box<dyn Error>> {
-    let listen: SocketAddr = args.socks.parse()?;
-
-    Ok(SocksServerConfig::new(listen.to_string()))
-}
-
-fn quic_config_from_args(args: &Args) -> Result<QuicConfig, Box<dyn std::error::Error>> {
+fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    let mut config = QuicConfig::new(args.server_address.clone());
+    let mut builder = QuicBuilder::new(args.server_address.clone());
 
     if let Some(value) = &args.bind {
-        config = config.with_bind(value.to_string());
+        builder = builder.with_bind(value.to_string());
     }
 
     if let Some(value) = &args.server_name {
-        config = config.with_server_name(value.to_string());
+        builder = builder.with_server_name(value.to_string());
     }
 
     if let Some(value) = &args.tls_cert {
-        config = config.with_tls_cert(value.to_string());
+        builder = builder.with_tls_cert(value.to_string());
     }
 
     if let Some(value) = args.initial_congestion_window {
-        config = config.with_initial_congestion_window(value);
+        builder = builder.with_initial_congestion_window(value);
     }
 
     if let Some(value) = args.max_handshake_duration {
-        config = config.with_max_handshake_duration(Duration::from_millis(value));
+        builder = builder.with_max_handshake_duration(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_idle_timeout {
-        config = config.with_max_idle_timeout(Duration::from_millis(value));
+        builder = builder.with_max_idle_timeout(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_keep_alive_period {
-        config = config.with_max_keep_alive_period(Duration::from_millis(value));
+        builder = builder.with_max_keep_alive_period(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_open_bidirectional_streams {
-        config = config.with_max_open_bidirectional_streams(value);
+        builder = builder.with_max_open_bidirectional_streams(value);
     }
 
     if let Some(value) = args.bidirectional_local_data_window {
-        config = config.with_bidirectional_local_data_window(value);
+        builder = builder.with_bidirectional_local_data_window(value);
     }
 
     if let Some(value) = args.bidirectional_remote_data_window {
-        config = config.with_bidirectional_remote_data_window(value);
+        builder = builder.with_bidirectional_remote_data_window(value);
     }
 
-    Ok(config)
+    Ok(builder.build())
 }

@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "s2n-quic",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac-client"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "clap",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac-server"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "clap",
