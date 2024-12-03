@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::net::SocketAddr;
 
 use clap::Parser;
@@ -75,7 +76,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     #[cfg(feature = "tracing")]
@@ -91,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn std::error::Error>> {
+async fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn Error>> {
     use std::time::Duration;
 
     let mut builder = QuicBuilder::new(args.server_address.clone());

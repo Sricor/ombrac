@@ -1,7 +1,6 @@
 mod macros;
 
 pub mod transport;
+pub mod server;
 
-pub struct Server<T> {
-    inner: T,
-}
+pub use server::Server;
