@@ -109,8 +109,8 @@ impl Builder {
         self
     }
 
-    pub fn build(self) -> Quic {
-        Quic::new(self)
+    pub async fn build(self) -> io::Result<Quic> {
+        Quic::new(self).await
     }
 
     fn server_name(&self) -> io::Result<&str> {
@@ -144,38 +144,24 @@ impl Builder {
 }
 
 impl Quic {
-    fn new(config: Builder) -> Self {
+    async fn new(config: Builder) -> io::Result<Self> {
         use s2n_quic::client::Connect;
 
         let (sender, receiver) = mpsc::channel(1);
+        
+        let server_name = config.server_name()?.to_string();
+        let server_addr = config.server_socket_address().await?;
 
+        let client = match s2n_client_with_config(&config).await {
+            Ok(value) => value,
+            Err(_error) => {
+                return Err(io::Error::other(_error.to_string()))
+            }
+        };
+        
         tokio::spawn(async move {
             'connection: loop {
-                let server_name = match config.server_name() {
-                    Ok(value) => value,
-                    Err(_error) => {
-                        error!("{_error}");
-                        continue 'connection;
-                    }
-                };
-
-                let server_addr = match config.server_socket_address().await {
-                    Ok(value) => value,
-                    Err(_error) => {
-                        error!("{_error}");
-                        continue 'connection;
-                    }
-                };
-
-                let connect = Connect::new(server_addr).with_server_name(server_name);
-
-                let client = match s2n_client_with_config(&config).await {
-                    Ok(value) => value,
-                    Err(_error) => {
-                        error!("{_error}");
-                        continue 'connection;
-                    }
-                };
+                let connect = Connect::new(server_addr.clone()).with_server_name(server_name.clone());
 
                 let mut connection = match client.connect(connect).await {
                     Ok(value) => value,
@@ -230,7 +216,7 @@ impl Quic {
             }
         });
 
-        Self(receiver)
+        Ok(Self(receiver))
     }
 }
 

@@ -84,14 +84,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let ombrac_client = Client::new(quic_from_args(&args)?);
+    let ombrac_client = Client::new(quic_from_args(&args).await?);
 
     SocksServer::listen(args.socks, ombrac_client).await?;
 
     Ok(())
 }
 
-fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn std::error::Error>> {
+async fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     let mut builder = QuicBuilder::new(args.server_address.clone());
@@ -136,5 +136,5 @@ fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn std::error::Error>> {
         builder = builder.with_bidirectional_remote_data_window(value);
     }
 
-    Ok(builder.build())
+    Ok(builder.build().await?)
 }
