@@ -2,15 +2,12 @@ mod v5;
 
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use ombrac::io::IntoSplit;
 use ombrac::request::Address;
-
 use ombrac::Provider;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 
 use crate::Client;
 use crate::{error, info};
