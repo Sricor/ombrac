@@ -17,7 +17,7 @@ where
         Self { transport }
     }
 
-    async fn outbound(&mut self) -> io::Result<Stream> {
+    pub async fn outbound(&mut self) -> io::Result<Stream> {
         match self.transport.fetch().await {
             Some(value) => Ok(value),
             None => Err(io::Error::new(
@@ -27,10 +27,9 @@ where
         }
     }
 
-    pub async fn tcp_connect(&mut self, address: Address) -> io::Result<Stream> {
-        let mut outbound = self.outbound().await?;
-        <Request as Streamable>::write(&Request::TcpConnect(address), &mut outbound).await?;
+    pub async fn tcp_connect(outbound: &mut Stream, address: Address) -> io::Result<()> {
+        <Request as Streamable>::write(&Request::TcpConnect(address), outbound).await?;
 
-        Ok(outbound)
+        Ok(())
     }
 }
