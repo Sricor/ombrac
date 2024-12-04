@@ -2,9 +2,8 @@ use std::future::Future;
 use std::io;
 
 use bytes::BytesMut;
-pub use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const DEFAULT_BUF_SIZE: usize = 8 * 1024;
+pub use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub trait ToBytes {
     fn to_bytes(&self) -> BytesMut;
@@ -32,50 +31,6 @@ pub trait IntoSplit {
         impl AsyncReadExt + Unpin + Send,
         impl AsyncWriteExt + Unpin + Send,
     );
-}
-
-pub(crate) mod utils {
-    use super::*;
-
-    pub(crate) async fn copy_bidirectional<A, B>(a: A, b: B) -> io::Result<()>
-    where
-        A: IntoSplit,
-        B: IntoSplit,
-    {
-        let (mut a_reader, mut a_writer) = a.into_split();
-        let (mut b_reader, mut b_writer) = b.into_split();
-
-        let a_to_b = async {
-            let mut buffer = [0u8; DEFAULT_BUF_SIZE];
-            loop {
-                let n = match a_reader.read(&mut buffer).await {
-                    Ok(0) => return Ok(()),
-                    Ok(n) => n,
-                    Err(err) => return Err(err),
-                };
-                b_writer.write_all(&buffer[..n]).await?;
-                b_writer.flush().await?;
-            }
-        };
-
-        let b_to_a = async {
-            let mut buffer = [0u8; DEFAULT_BUF_SIZE];
-            loop {
-                let n = match b_reader.read(&mut buffer).await {
-                    Ok(0) => return Ok(()),
-                    Ok(n) => n,
-                    Err(err) => return Err(err),
-                };
-                a_writer.write_all(&buffer[..n]).await?;
-                a_writer.flush().await?;
-            }
-        };
-
-        tokio::select! {
-            result = a_to_b => {result},
-            result = b_to_a => {result},
-        }
-    }
 }
 
 mod impl_crates {

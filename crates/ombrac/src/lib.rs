@@ -1,14 +1,10 @@
-mod client;
-mod server;
+use std::future::Future;
 
 pub mod io;
 pub mod request;
 
-pub use client::Client;
-pub use server::Server;
-
 pub trait Provider {
     type Item;
 
-    fn fetch(&mut self) -> impl std::future::Future<Output = Option<Self::Item>> + Send;
+    fn fetch(&mut self) -> impl Future<Output = Option<Self::Item>> + Send;
 }
