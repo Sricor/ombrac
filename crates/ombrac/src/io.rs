@@ -37,6 +37,11 @@ mod impl_crates {
     mod impl_tokio {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpStream;
+        #[cfg(feature = "tokio-rustls")]
+        use tokio_rustls::server::TlsStream;
+
+        #[cfg(feature = "tokio-rustls")]
+        use tokio_rustls::client::TlsStream as ClientTlsStream;
 
         use crate::io::IntoSplit;
 
@@ -48,6 +53,30 @@ mod impl_crates {
                 impl AsyncWriteExt + Unpin + Send,
             ) {
                 self.into_split()
+            }
+        }
+
+        #[cfg(feature = "tokio-rustls")]
+        impl IntoSplit for TlsStream<TcpStream> {
+            fn into_split(
+                self,
+            ) -> (
+                impl AsyncReadExt + Unpin + Send,
+                impl AsyncWriteExt + Unpin + Send,
+            ) {
+                self.into_inner().0.into_split()
+            }
+        }
+
+        #[cfg(feature = "tokio-rustls")]
+        impl IntoSplit for ClientTlsStream<TcpStream> {
+            fn into_split(
+                self,
+            ) -> (
+                impl AsyncReadExt + Unpin + Send,
+                impl AsyncWriteExt + Unpin + Send,
+            ) {
+                self.into_inner().0.into_split()
             }
         }
     }

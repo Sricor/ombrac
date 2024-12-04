@@ -697,6 +697,7 @@ dependencies = [
  "bytes",
  "s2n-quic",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -709,8 +710,10 @@ dependencies = [
  "s2n-quic",
  "socks-lib",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -722,8 +725,10 @@ dependencies = [
  "ombrac",
  "s2n-quic",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1313,6 +1318,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c7bc40d0e5a97695bb96e27995cd3a08538541b0a846f65bba7a359f36700d4"
+dependencies = [
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+]
+
+[[package]]
 name = "tracing"
 version = "0.1.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1378,6 +1394,15 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d642ff16b7e79272ae451b7322067cdc17cadf68c23264be9d94a32319efe7e"
+dependencies = [
+ "rustls-pki-types",
+]
 
 [[package]]
 name = "which"

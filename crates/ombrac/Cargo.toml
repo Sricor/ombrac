@@ -11,11 +11,13 @@ description.workspace = true
 [features]
 default = []
 s2n-quic = ["dep:s2n-quic"]
+tokio-rustls = ['dep:tokio-rustls']
 
 [dependencies]
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 s2n-quic = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

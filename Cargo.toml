@@ -32,6 +32,10 @@ clap = { version = "4", default-features = false }
 s2n-quic = { version = "1", default-features = false }
 aws-lc-rs = { version = "1", default-features = false }
 
+# tls
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+
 # logging
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
