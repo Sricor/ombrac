@@ -19,10 +19,18 @@ struct Args {
     )]
     socks: SocketAddr,
 
+    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
     host: String,
+
+    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
     port: u16,
+
+    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
     domain: Option<String>,
-    cafile: Option<String>,
+
+    /// Path to the TLS certificate file for secure connections
+    #[clap(long, help_heading = "Transport TLS", value_name = "FILE")]
+    tls_cert: String,
 
     /// Logging level e.g., INFO, WARN, ERROR
     #[cfg(feature = "tracing")]
