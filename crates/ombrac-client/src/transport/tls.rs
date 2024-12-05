@@ -1,36 +1,51 @@
 use std::io;
-use std::net::ToSocketAddrs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ombrac::Provider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::{rustls, TlsConnector};
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
-pub struct Builder {
-    host: String,
-    port: u16,
-    domain: Option<String>,
-    cafile: Option<PathBuf>,
-}
-
-impl Builder {
-    pub fn new(host: String, port: u16) -> Self {
-        Self { host, port, domain: None, cafile: None }
-    }
-
-    pub async fn build(self) -> io::Result<Tls> {
-        Tls::new(self).await
-    }
-}
+use super::Result;
 
 type Stream = TlsStream<TcpStream>;
 
 pub struct Tls(Receiver<Stream>);
+
+impl Tls {
+    async fn new(mut options: Builder) -> Result<Self> {
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(options.root_cert_store()?)
+            .with_no_client_auth();
+
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let domain = ServerName::try_from(options.host.as_str())?.to_owned();
+
+        let (sender, receiver) = mpsc::channel(1);
+
+        tokio::spawn(async move {
+            use crate::try_or_continue;
+
+            loop {
+                let addr = try_or_continue!(options.ip().await);
+                let stream = try_or_continue!(TcpStream::connect(&addr).await);
+                let stream = try_or_continue!(connector.connect(domain.clone(), stream).await);
+
+                if sender.send(stream).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self(receiver))
+    }
+}
 
 impl Provider for Tls {
     type Item = Stream;
@@ -40,45 +55,74 @@ impl Provider for Tls {
     }
 }
 
-impl Tls {
-    async fn new(options: Builder) -> io::Result<Self> {
-        let addr = (options.host.as_str(), options.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+pub struct Builder {
+    host: String,
+    port: u16,
+    ip: Option<(SocketAddr, Instant)>,
+    tls_cert: Option<PathBuf>,
+    ip_cache_duration: Duration,
+}
 
-        let domain = options.domain.unwrap_or(options.host);
+impl Builder {
+    pub fn new(host: String, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            ip: None,
+            tls_cert: None,
+            ip_cache_duration: Duration::from_secs(1800),
+        }
+    }
 
-        let mut root_cert_store = rustls::RootCertStore::empty();
+    pub fn with_tls_cert(mut self, tls_cert: PathBuf) -> Self {
+        self.tls_cert = Some(tls_cert);
 
-        if let Some(cafile) = &options.cafile {
-            for cert in CertificateDer::pem_file_iter(cafile).unwrap() {
-                root_cert_store.add(cert.unwrap()).unwrap();
+        self
+    }
+
+    pub fn with_ip_cache_duration(mut self, ip_cache_duration: Duration) -> Self {
+        self.ip_cache_duration = ip_cache_duration;
+
+        self
+    }
+
+    pub async fn build(self) -> Result<Tls> {
+        Tls::new(self).await
+    }
+
+    async fn ip(&mut self) -> Result<SocketAddr> {
+        use tokio::net::lookup_host;
+
+        if let Some((cached_ip, cached_at)) = &self.ip {
+            if cached_at.elapsed() < self.ip_cache_duration {
+                return Ok(*cached_ip);
             }
-        } else {
-            root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
 
-        let options = rustls::ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
+        let addr = lookup_host((self.host.as_str(), self.port))
+            .await?
+            .next()
+            .ok_or(io::Error::other(format!(
+                "unable to resolve address '{}'",
+                self.host
+            )))?;
 
-        let domain = ServerName::try_from(domain.as_str()).unwrap().to_owned();
-        let connector = TlsConnector::from(Arc::new(options));
+        self.ip = Some((addr, Instant::now()));
 
-        let (sender, receiver) = mpsc::channel(1);
-        
-        tokio::spawn(async move {
-            loop {
-                let stream = TcpStream::connect(&addr).await.unwrap();
-                let stream = connector.connect(domain.clone(), stream).await.unwrap();
+        Ok(addr)
+    }
 
-                if sender.send(stream).await.is_err() {
-                    break;
-                }
+    fn root_cert_store(&self) -> Result<RootCertStore> {
+        let mut store = RootCertStore::empty();
+
+        if let Some(tls_cert) = &self.tls_cert {
+            for cert in CertificateDer::pem_file_iter(tls_cert)? {
+                store.add(cert?)?;
             }
-        });
+        } else {
+            store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
 
-        Ok(Self(receiver))
+        Ok(store)
     }
 }

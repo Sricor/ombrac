@@ -1,35 +1,59 @@
-use std::io;
-use std::net::ToSocketAddrs;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ombrac::Provider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver};
+use tokio_rustls::rustls::pki_types::PrivateKeyDer;
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
+use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::server::TlsStream;
-use tokio_rustls::{rustls, TlsAcceptor};
+use tokio_rustls::TlsAcceptor;
 
-pub struct Builder {
-    listen: String,
-
-    tls_key: String,
-    tls_cert: String,
-}
-
-impl Builder {
-    pub fn new(listen: String, tls_cert: String, tls_key: String) -> Self {
-        Self { listen, tls_cert, tls_key }
-    }
-
-    pub async fn build(self) -> io::Result<Tls> {
-        Tls::new(self).await
-    }
-}
+use super::Result;
 
 type Stream = TlsStream<TcpStream>;
 
 pub struct Tls(Receiver<Stream>);
+
+impl Tls {
+    async fn new(options: Builder) -> Result<Self> {
+        let listener = TcpListener::bind(options.listen).await?;
+        let key = PrivateKeyDer::from_pem_file(&options.tls_key)?;
+        let certs = CertificateDer::pem_file_iter(&options.tls_cert)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
+
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let (sender, receiver) = mpsc::channel(1);
+
+        tokio::spawn(async move {
+            use crate::{debug, try_or_continue};
+
+            while let Ok((stream, _peer_addr)) = listener.accept().await {
+                debug!(
+                    "{:?} accept connection from {:?}",
+                    stream.local_addr(),
+                    _peer_addr
+                );
+
+                let acceptor = acceptor.clone();
+                let stream = try_or_continue!(acceptor.accept(stream).await);
+
+                if sender.send(stream).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self(receiver))
+    }
+}
 
 impl Provider for Tls {
     type Item = Stream;
@@ -39,40 +63,23 @@ impl Provider for Tls {
     }
 }
 
-impl Tls {
-    async fn new(options: Builder) -> io::Result<Self> {
+pub struct Builder {
+    listen: SocketAddr,
 
-    let addr = options
-        .listen
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
+    tls_key: PathBuf,
+    tls_cert: PathBuf,
+}
 
-    let certs = CertificateDer::pem_file_iter(&options.tls_cert).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
-    let key = PrivateKeyDer::from_pem_file(&options.tls_key).unwrap();
-
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key).unwrap();
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-
-    let listener = TcpListener::bind(&addr).await?;
-
-    let (sender, receiver) = mpsc::channel(1);
-
-    tokio::spawn(async move {
-        while let Ok((stream, _peer_addr)) = listener.accept().await {
-            let acceptor = acceptor.clone();
-
-            let stream = acceptor.accept(stream).await.unwrap();
-
-            if sender.send(stream).await.is_err() {
-                break;
-            }
+impl Builder {
+    pub fn new(listen: SocketAddr, tls_cert: PathBuf, tls_key: PathBuf) -> Self {
+        Self {
+            listen,
+            tls_cert,
+            tls_key,
         }
-    });
+    }
 
-    Ok(Self(receiver))
-
+    pub async fn build(self) -> Result<Tls> {
+        Tls::new(self).await
     }
 }

@@ -1,6 +1,6 @@
 mod macros;
 
-pub mod transport;
 pub mod server;
+pub mod transport;
 
 pub use server::Server;

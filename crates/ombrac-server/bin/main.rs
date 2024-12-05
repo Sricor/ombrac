@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Parser;
 use ombrac_server::transport::tls::{Builder, Tls};
@@ -10,15 +12,15 @@ struct Args {
     // Transport TLS
     /// Transport server listening address
     #[clap(long, help_heading = "Transport TLS", value_name = "ADDR")]
-    listen: String,
+    listen: SocketAddr,
 
     /// Path to the TLS certificate file for secure connections
     #[clap(long, help_heading = "Transport TLS", value_name = "FILE")]
-    tls_cert: String,
+    tls_cert: PathBuf,
 
     /// Path to the TLS private key file for secure connections
     #[clap(long, help_heading = "Transport TLS", value_name = "FILE")]
-    tls_key: String,
+    tls_key: PathBuf,
 
     /// Logging level e.g., INFO, WARN, ERROR
     #[cfg(feature = "tracing")]
@@ -41,8 +43,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_max_level(args.tracing_level)
         .init();
 
-    let mut server = Server::new(tls_config_from_args(&args).await?);
+    let mut server = Server::new(tls_from_args(&args).await?);
 
+    #[cfg(feature = "tracing")]
     tracing::info!("server listening on {}", args.listen);
 
     server.listen().await?;
@@ -50,8 +53,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn tls_config_from_args(args: &Args) -> Result<Tls, Box<dyn Error>> {
-    let builder = Builder::new(args.listen.clone(), args.tls_cert.clone(), args.tls_key.clone());
+async fn tls_from_args(args: &Args) -> Result<Tls, Box<dyn Error>> {
+    let builder = Builder::new(
+        args.listen.clone(),
+        args.tls_cert.to_path_buf(),
+        args.tls_key.to_path_buf(),
+    );
 
     Ok(builder.build().await?)
 }

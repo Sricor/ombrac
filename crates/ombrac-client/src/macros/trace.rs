@@ -49,3 +49,20 @@ macro_rules! error {
         }
     };
 }
+
+#[macro_export]
+macro_rules! try_or_continue {
+    ($expr:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(_error) => {
+                #[cfg(feature = "tracing")]
+                {
+                    tracing::error!("{}", _error);
+                }
+
+                continue;
+            }
+        }
+    };
+}

@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Parser;
 use ombrac_client::endpoint::socks::Server as SocksServer;
@@ -19,18 +20,18 @@ struct Args {
     )]
     socks: SocketAddr,
 
-    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
+    // Transport TLS
+    /// The hostname or IP address of the server to connect
+    #[clap(long, help_heading = "Transport TLS", value_name = "ADDR")]
     host: String,
 
-    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
+    /// The port of the server to connect
+    #[clap(long, help_heading = "Transport TLS", value_name = "PORT")]
     port: u16,
 
-    #[clap(long, help_heading = "Transport TLS", value_name = "VALUE")]
-    domain: Option<String>,
-
-    /// Path to the TLS certificate file for secure connections
+    /// Path to the certificate file for secure connections
     #[clap(long, help_heading = "Transport TLS", value_name = "FILE")]
-    tls_cert: String,
+    tls_cert: Option<PathBuf>,
 
     /// Logging level e.g., INFO, WARN, ERROR
     #[cfg(feature = "tracing")]
@@ -61,7 +62,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn tls_from_args(args: &Args) -> Result<Tls, Box<dyn Error>> {
-    let builder = Builder::new(args.host.clone(), args.port);
+    let mut builder = Builder::new(args.host.to_string(), args.port);
+
+    if let Some(value) = &args.tls_cert {
+        builder = builder.with_tls_cert(value.to_path_buf());
+    }
 
     Ok(builder.build().await?)
 }

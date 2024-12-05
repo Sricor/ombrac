@@ -1,12 +1,12 @@
 use std::error::Error;
-use std::net::SocketAddr;
-use std::time::Duration;
 use std::io;
+use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 
+use ombrac::Provider;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
-use ombrac::Provider;
 
 use crate::info;
 
@@ -109,16 +109,13 @@ impl Builder {
     }
 }
 
-
 impl Quic {
     async fn new(config: Builder) -> io::Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
 
         let mut server = match s2n_server_with_config(&config).await {
             Ok(value) => value,
-            Err(_error) => {
-                return Err(io::Error::other(_error.to_string()))
-            }
+            Err(_error) => return Err(io::Error::other(_error.to_string())),
         };
 
         tokio::spawn(async move {
@@ -139,7 +136,7 @@ impl Quic {
 
                     while let Ok(Some(stream)) = connection.accept_bidirectional_stream().await {
                         if sender.send(stream).await.is_err() {
-                            return
+                            return;
                         }
                     }
                 });

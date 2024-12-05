@@ -61,7 +61,7 @@ where
                     error!("{}", _error);
                 }
             });
-        };
+        }
 
         Ok(())
     }

@@ -148,20 +148,19 @@ impl Quic {
         use s2n_quic::client::Connect;
 
         let (sender, receiver) = mpsc::channel(1);
-        
+
         let server_name = config.server_name()?.to_string();
         let server_addr = config.server_socket_address().await?;
 
         let client = match s2n_client_with_config(&config).await {
             Ok(value) => value,
-            Err(_error) => {
-                return Err(io::Error::other(_error.to_string()))
-            }
+            Err(_error) => return Err(io::Error::other(_error.to_string())),
         };
-        
+
         tokio::spawn(async move {
             'connection: loop {
-                let connect = Connect::new(server_addr.clone()).with_server_name(server_name.clone());
+                let connect =
+                    Connect::new(server_addr.clone()).with_server_name(server_name.clone());
 
                 let mut connection = match client.connect(connect).await {
                     Ok(value) => value,
