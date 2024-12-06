@@ -10,7 +10,7 @@ pre-build = [
     # https://github.com/cross-rs/cross/wiki/FAQ#using-clang--bindgen
     # https://aws.github.io/aws-lc-rs/requirements/linux.html
     "apt install --assume-yes build-essential libclang1 golang nasm wine",
-    "apt install --assume-yes libclang-10-dev clang-10"
+    "apt install --assume-yes libclang-15-dev clang-15"
 ]
 
 [target.x86_64-pc-windows-gnu]

@@ -27,7 +27,7 @@ impl Tls {
         let connector = TlsConnector::from(Arc::new(client_config));
         let domain = ServerName::try_from(options.host.as_str())?.to_owned();
 
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(16);
 
         tokio::spawn(async move {
             use crate::try_or_continue;
