@@ -3,7 +3,6 @@ mod v5;
 use std::error::Error;
 use std::net::SocketAddr;
 
-use ombrac::io::IntoSplit;
 use ombrac::request::Address;
 use ombrac::Provider;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,7 +21,7 @@ impl Server {
     pub async fn listen<T, S>(addr: SocketAddr, mut ombrac: Client<T>) -> Result<(), Box<dyn Error>>
     where
         T: Provider<Item = S> + Send + 'static,
-        S: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+        S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -58,7 +57,9 @@ impl Server {
                             return;
                         };
 
-                        match tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await {
+                        match ombrac::io::util::copy_bidirectional(&mut inbound, &mut outbound)
+                            .await
+                        {
                             Ok(value) => {
                                 info!(
                                     "TcpConnect {:?} send {}, receive {}",

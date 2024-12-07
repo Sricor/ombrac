@@ -1,6 +1,6 @@
 use std::io;
 
-use ombrac::io::{AsyncReadExt, AsyncWriteExt, IntoSplit, Streamable};
+use ombrac::io::{AsyncReadExt, AsyncWriteExt, Streamable};
 use ombrac::request::{Address, Request};
 use ombrac::Provider;
 
@@ -11,7 +11,7 @@ pub struct Client<T> {
 impl<Transport, Stream> Client<Transport>
 where
     Transport: Provider<Item = Stream>,
-    Stream: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    Stream: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 {
     pub fn new(transport: Transport) -> Self {
         Self { transport }

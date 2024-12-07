@@ -1,7 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use ombrac::io::{AsyncReadExt, AsyncWriteExt, IntoSplit, Streamable};
+use ombrac::io::{AsyncReadExt, AsyncWriteExt, Streamable};
 use ombrac::request::{Address, Request};
 use ombrac::Provider;
 use tokio::net::TcpStream;
@@ -15,14 +15,14 @@ pub struct Server<T> {
 impl<Transport, Stream> Server<Transport>
 where
     Transport: Provider<Item = Stream>,
-    Stream: IntoSplit + AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    Stream: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 {
     pub fn new(transport: Transport) -> Self {
         Self { transport }
     }
 
     async fn handler(mut stream: Stream) -> io::Result<()> {
-        use tokio::io::copy_bidirectional;
+        use ombrac::io::util::copy_bidirectional;
 
         let request = <Request as Streamable>::read(&mut stream).await?;
 
