@@ -33,21 +33,29 @@ impl Tls {
         let (sender, receiver) = mpsc::channel(1);
 
         tokio::spawn(async move {
-            use crate::{debug, try_or_continue};
+            use crate::{debug, try_or_return};
 
             while let Ok((stream, _peer_addr)) = listener.accept().await {
-                debug!(
-                    "{:?} accept connection from {:?}",
-                    stream.local_addr(),
-                    _peer_addr
-                );
-
-                let acceptor = acceptor.clone();
-                let stream = try_or_continue!(acceptor.accept(stream).await);
-
-                if sender.send(stream).await.is_err() {
+                if sender.is_closed() {
                     break;
                 }
+
+                let sender = sender.clone();
+                let acceptor = acceptor.clone();
+
+                tokio::spawn(async move {
+                    debug!(
+                        "{:?} accept connection from {:?}",
+                        stream.local_addr(),
+                        _peer_addr
+                    );
+
+                    let stream = try_or_return!(acceptor.accept(stream).await);
+
+                    if sender.send(stream).await.is_err() {
+                        return;
+                    }
+                });
             }
         });
 
