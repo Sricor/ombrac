@@ -25,7 +25,7 @@ impl Tls {
             .with_root_certificates(options.root_cert_store()?)
             .with_no_client_auth();
 
-        
+        client_config.key_log = Arc::new(tokio_rustls::rustls::KeyLogFile::new());
         client_config.enable_early_data = true;
 
         let connector = TlsConnector::from(Arc::new(client_config)).early_data(true);
