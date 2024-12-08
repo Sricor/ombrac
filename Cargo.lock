@@ -695,9 +695,8 @@ name = "ombrac"
 version = "0.2.0"
 dependencies = [
  "bytes",
- "s2n-quic",
+ "futures",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]

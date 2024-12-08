@@ -22,8 +22,8 @@ default = [
 tracing = ["dep:tracing"]
 
 transport-default = ["transport-tls"]
-transport-quic = ["s2n-quic", "aws-lc-rs", "ombrac/s2n-quic"]
-transport-tls = ["tokio-rustls", "webpki-roots", "ombrac/tokio-rustls"]
+transport-quic = ["s2n-quic", "aws-lc-rs"]
+transport-tls = ["tokio-rustls", "webpki-roots"]
 
 binary = [
     "clap",

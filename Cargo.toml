@@ -20,6 +20,7 @@ ombrac = { version = "*", path = "crates/ombrac", default-features = false }
 ombrac-client = { version = "*", path = "crates/ombrac-client", default-features = false }
 ombrac-server = { version = "*", path = "crates/ombrac-server", default-features = false }
 
+futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 bytes = { version = "1", default-features = false }
 
