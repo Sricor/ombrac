@@ -29,7 +29,6 @@ impl Tls {
             .with_no_client_auth()
             .with_single_cert(certs, key)?;
 
-        server_config.session_storage = ServerSessionMemoryCache::new(1024);
         server_config.max_early_data_size = 16384;
 
         let acceptor = TlsAcceptor::from(Arc::new(server_config));

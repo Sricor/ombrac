@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
+use tokio_rustls::rustls::client::ClientSessionMemoryCache;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
@@ -24,6 +25,7 @@ impl Tls {
             .with_root_certificates(options.root_cert_store()?)
             .with_no_client_auth();
 
+        
         client_config.enable_early_data = true;
 
         let connector = TlsConnector::from(Arc::new(client_config)).early_data(true);
