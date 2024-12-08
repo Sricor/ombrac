@@ -7,7 +7,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_rustls::rustls::pki_types::PrivateKeyDer;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
-use tokio_rustls::rustls::server::ServerSessionMemoryCache;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
@@ -33,7 +32,7 @@ impl Tls {
 
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-        let (sender, receiver) = mpsc::channel(8);
+        let (sender, receiver) = mpsc::channel(1);
 
         tokio::spawn(async move {
             use crate::{debug, try_or_return};

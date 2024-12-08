@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use ombrac::io::Streamable;
 use ombrac::request::{Address, Request};
 use ombrac::Provider;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 
 use crate::error;
 
