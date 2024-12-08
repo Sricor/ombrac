@@ -29,15 +29,15 @@ impl Tls {
         let connector = TlsConnector::from(Arc::new(client_config)).early_data(true);
         let domain = ServerName::try_from(options.host.as_str())?.to_owned();
 
-        let (sender, receiver) = mpsc::channel(8);
+        let (sender, receiver) = mpsc::channel(1);
 
         tokio::spawn(async move {
-            use crate::try_or_continue;
+            use crate::{debug_timer, try_or_continue};
 
             loop {
                 let addr = try_or_continue!(options.ip().await);
                 let stream = try_or_continue!(TcpStream::connect(&addr).await);
-                let stream = try_or_continue!(connector.connect(domain.clone(), stream).await);
+                let stream = debug_timer!("TLS took", try_or_continue!(connector.connect(domain.clone(), stream).await));
 
                 if sender.send(stream).await.is_err() {
                     break;

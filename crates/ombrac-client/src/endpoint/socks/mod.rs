@@ -57,7 +57,7 @@ impl Server {
                             return;
                         };
 
-                        match ombrac::io::util::copy_bidirectional(&mut inbound, &mut outbound)
+                        match tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
                             .await
                         {
                             Ok(value) => {

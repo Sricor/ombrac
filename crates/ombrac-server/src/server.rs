@@ -22,7 +22,7 @@ where
     }
 
     async fn handler(mut stream: Stream) -> io::Result<()> {
-        use ombrac::io::util::copy_bidirectional;
+        use tokio::io::copy_bidirectional;
 
         let request = <Request as Streamable>::read(&mut stream).await?;
 
