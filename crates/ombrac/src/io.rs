@@ -46,8 +46,8 @@ pub mod util {
     /// This function will return an error if any read or write operation fails.
     pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> io::Result<(u64, u64)>
     where
-        A: AsyncReadExt + AsyncWriteExt + Unpin + ?Sized,
-        B: AsyncReadExt + AsyncWriteExt + Unpin + ?Sized,
+        A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+        B: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
         const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
@@ -66,7 +66,7 @@ pub mod util {
             }
 
             tokio::select! {
-                result = a.read(&mut buffer1), if !a_to_b_done => {
+                result = a.read(&mut buffer1) => {
                     let size = match result {
                         Ok(0) => {
                             a_to_b_done = true;
@@ -82,7 +82,7 @@ pub mod util {
                     a_to_b_bytes += size as u64;
                 },
 
-                result = b.read(&mut buffer2), if !b_to_a_done => {
+                result = b.read(&mut buffer2) => {
                     let size = match result {
                         Ok(0) => {
                             b_to_a_done = true;

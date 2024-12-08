@@ -20,14 +20,16 @@ pub struct Tls(Receiver<Stream>);
 
 impl Tls {
     async fn new(mut options: Builder) -> Result<Self> {
-        let client_config = ClientConfig::builder()
+        let mut client_config = ClientConfig::builder()
             .with_root_certificates(options.root_cert_store()?)
             .with_no_client_auth();
 
-        let connector = TlsConnector::from(Arc::new(client_config));
+        client_config.enable_early_data = true;
+
+        let connector = TlsConnector::from(Arc::new(client_config)).early_data(true);
         let domain = ServerName::try_from(options.host.as_str())?.to_owned();
 
-        let (sender, receiver) = mpsc::channel(16);
+        let (sender, receiver) = mpsc::channel(8);
 
         tokio::spawn(async move {
             use crate::try_or_continue;

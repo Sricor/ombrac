@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_rustls::rustls::pki_types::PrivateKeyDer;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
+use tokio_rustls::rustls::server::ServerSessionMemoryCache;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
@@ -24,9 +25,12 @@ impl Tls {
         let certs = CertificateDer::pem_file_iter(&options.tls_cert)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let server_config = ServerConfig::builder()
+        let mut server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key)?;
+
+        server_config.session_storage = ServerSessionMemoryCache::new(1024);
+        server_config.max_early_data_size = 16384;
 
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
