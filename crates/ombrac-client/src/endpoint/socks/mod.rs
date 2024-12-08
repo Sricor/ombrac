@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 
 use ombrac::request::Address;
 use ombrac::Provider;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::Client;
@@ -21,7 +21,7 @@ impl Server {
     pub async fn listen<T, S>(addr: SocketAddr, mut ombrac: Client<T>) -> Result<(), Box<dyn Error>>
     where
         T: Provider<Item = S> + Send + 'static,
-        S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -47,8 +47,6 @@ impl Server {
 
                 match request {
                     Request::TcpConnect(mut inbound, address) => {
-                        info!("TcpConnect {:?}", address);
-
                         if let Err(_error) =
                             Client::<T>::tcp_connect(&mut outbound, address.clone()).await
                         {
@@ -57,7 +55,7 @@ impl Server {
                             return;
                         };
 
-                        match tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+                        match ombrac::io::util::copy_bidirectional(&mut inbound, &mut outbound)
                             .await
                         {
                             Ok(value) => {

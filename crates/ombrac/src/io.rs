@@ -2,8 +2,7 @@ use std::future::Future;
 use std::io;
 
 use bytes::BytesMut;
-
-pub use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub trait ToBytes {
     fn to_bytes(&self) -> BytesMut;
@@ -13,7 +12,7 @@ pub trait Streamable {
     fn write<T>(&self, stream: &mut T) -> impl Future<Output = io::Result<()>> + Send
     where
         Self: ToBytes + Send + Sync,
-        T: AsyncWriteExt + Unpin + Send,
+        T: AsyncWrite + Unpin + Send,
     {
         async move { stream.write_all(&self.to_bytes()).await }
     }
@@ -21,12 +20,10 @@ pub trait Streamable {
     fn read<T>(stream: &mut T) -> impl Future<Output = io::Result<Self>> + Send
     where
         Self: Sized,
-        T: AsyncReadExt + Unpin + Send;
+        T: AsyncRead + Unpin + Send;
 }
 
 pub mod util {
-    use super::*;
-
     /// Copies data bidirectionally between two objects that implement AsyncRead and AsyncWrite.
     ///
     /// This function will read from both `a` and `b` and write the data to the other side until
@@ -44,6 +41,8 @@ pub mod util {
     /// # Errors
     ///
     /// This function will return an error if any read or write operation fails.
+    use super::*;
+
     pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> io::Result<(u64, u64)>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
@@ -51,54 +50,46 @@ pub mod util {
     {
         const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
-        let mut buffer1 = [0u8; DEFAULT_BUF_SIZE];
-        let mut buffer2 = [0u8; DEFAULT_BUF_SIZE];
-
-        let mut a_to_b_done = false;
-        let mut b_to_a_done = false;
-
         let mut a_to_b_bytes = 0u64;
         let mut b_to_a_bytes = 0u64;
 
-        loop {
-            if a_to_b_done && b_to_a_done {
-                break;
+        let (mut a_reader, mut a_writer) = tokio::io::split(a);
+        let (mut b_reader, mut b_writer) = tokio::io::split(b);
+
+        let a_to_b = async {
+            let mut buffer = [0u8; DEFAULT_BUF_SIZE];
+            loop {
+                let size = match a_reader.read(&mut buffer).await {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => n,
+                    Err(err) => return Err(err),
+                };
+                b_writer.write_all(&buffer[..size]).await?;
+                b_writer.flush().await?;
+
+                a_to_b_bytes += size as u64;
             }
+        };
 
-            tokio::select! {
-                result = a.read(&mut buffer1) => {
-                    let size = match result {
-                        Ok(0) => {
-                            a_to_b_done = true;
-                            continue;
-                        },
-                        Ok(num) => num,
-                        Err(err) => return Err(err),
-                    };
+        let b_to_a = async {
+            let mut buffer = [0u8; DEFAULT_BUF_SIZE];
+            loop {
+                let size = match b_reader.read(&mut buffer).await {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => n,
+                    Err(err) => return Err(err),
+                };
+                a_writer.write_all(&buffer[..size]).await?;
+                a_writer.flush().await?;
 
-                    b.write_all(&buffer1[..size]).await?;
-                    b.flush().await?;
-
-                    a_to_b_bytes += size as u64;
-                },
-
-                result = b.read(&mut buffer2) => {
-                    let size = match result {
-                        Ok(0) => {
-                            b_to_a_done = true;
-                            continue;
-                        },
-                        Ok(num) => num,
-                        Err(err) => return Err(err),
-                    };
-
-                    a.write_all(&buffer2[..size]).await?;
-                    a.flush().await?;
-
-                    b_to_a_bytes += size as u64;
-                }
+                b_to_a_bytes += size as u64;
             }
-        }
+        };
+
+        tokio::select! {
+            result = a_to_b => {result},
+            result = b_to_a => {result},
+        }?;
 
         Ok((a_to_b_bytes, b_to_a_bytes))
     }
@@ -434,6 +425,141 @@ pub mod util {
                 assert_eq!(e.kind(), io::ErrorKind::Other);
                 assert_eq!(e.to_string(), "Flush error");
             }
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_immediate_eof() -> io::Result<()> {
+            struct ImmediateEofStream {
+                written_data: Vec<u8>,
+            }
+
+            impl ImmediateEofStream {
+                fn new() -> Self {
+                    Self {
+                        written_data: Vec::new(),
+                    }
+                }
+            }
+
+            impl AsyncRead for ImmediateEofStream {
+                fn poll_read(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    _buf: &mut tokio::io::ReadBuf<'_>,
+                ) -> Poll<io::Result<()>> {
+                    Poll::Ready(Ok(())) // 立即返回 EOF
+                }
+            }
+
+            impl AsyncWrite for ImmediateEofStream {
+                fn poll_write(
+                    mut self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    buf: &[u8],
+                ) -> Poll<io::Result<usize>> {
+                    self.written_data.extend_from_slice(buf);
+                    Poll::Ready(Ok(buf.len()))
+                }
+
+                fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+
+                fn poll_shutdown(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                ) -> Poll<io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+            }
+
+            impl Unpin for ImmediateEofStream {}
+
+            let mut stream1 = ImmediateEofStream::new();
+            let mut stream2 = ImmediateEofStream::new();
+
+            let (a_to_b, b_to_a) = copy_bidirectional(&mut stream1, &mut stream2).await?;
+
+            assert_eq!(a_to_b, 0);
+            assert_eq!(b_to_a, 0);
+            assert!(stream1.written_data.is_empty());
+            assert!(stream2.written_data.is_empty());
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_alternating_data() -> io::Result<()> {
+            struct AlternatingStream {
+                data: Vec<Vec<u8>>,
+                current_chunk: usize,
+                written_data: Vec<u8>,
+            }
+
+            impl AlternatingStream {
+                fn new(data: Vec<Vec<u8>>) -> Self {
+                    Self {
+                        data,
+                        current_chunk: 0,
+                        written_data: Vec::new(),
+                    }
+                }
+            }
+
+            impl AsyncRead for AlternatingStream {
+                fn poll_read(
+                    mut self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    buf: &mut tokio::io::ReadBuf<'_>,
+                ) -> Poll<io::Result<()>> {
+                    if self.current_chunk >= self.data.len() {
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    let chunk = &self.data[self.current_chunk];
+                    buf.put_slice(chunk);
+                    self.current_chunk += 1;
+                    Poll::Ready(Ok(()))
+                }
+            }
+
+            impl AsyncWrite for AlternatingStream {
+                fn poll_write(
+                    mut self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    buf: &[u8],
+                ) -> Poll<io::Result<usize>> {
+                    self.written_data.extend_from_slice(buf);
+                    Poll::Ready(Ok(buf.len()))
+                }
+
+                fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+
+                fn poll_shutdown(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                ) -> Poll<io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+            }
+
+            impl Unpin for AlternatingStream {}
+
+            let mut stream1 =
+                AlternatingStream::new(vec![b"Hello".to_vec(), b" ".to_vec(), b"World".to_vec()]);
+            let mut stream2 =
+                AlternatingStream::new(vec![b"Goodbye".to_vec(), b" ".to_vec(), b"Earth".to_vec()]);
+
+            let (a_to_b, b_to_a) = copy_bidirectional(&mut stream1, &mut stream2).await?;
+
+            assert_eq!(stream1.written_data, b"Goodbye Earth");
+            assert_eq!(stream2.written_data, b"Hello World");
+            assert_eq!(a_to_b, 11);
+            assert_eq!(b_to_a, 13);
 
             Ok(())
         }

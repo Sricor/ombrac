@@ -1,10 +1,11 @@
 use std::io;
 use std::net::SocketAddr;
 
-use ombrac::io::{AsyncReadExt, AsyncWriteExt, Streamable};
+use ombrac::io::Streamable;
 use ombrac::request::{Address, Request};
 use ombrac::Provider;
 use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error;
 
@@ -15,7 +16,7 @@ pub struct Server<T> {
 impl<Transport, Stream> Server<Transport>
 where
     Transport: Provider<Item = Stream>,
-    Stream: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     pub fn new(transport: Transport) -> Self {
         Self { transport }

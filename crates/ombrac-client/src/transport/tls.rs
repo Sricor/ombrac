@@ -9,7 +9,6 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
-use tokio_rustls::rustls::client::ClientSessionMemoryCache;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
@@ -21,17 +20,14 @@ pub struct Tls(Receiver<Stream>);
 
 impl Tls {
     async fn new(mut options: Builder) -> Result<Self> {
-        let mut client_config = ClientConfig::builder()
+        let client_config = ClientConfig::builder()
             .with_root_certificates(options.root_cert_store()?)
             .with_no_client_auth();
 
-        client_config.key_log = Arc::new(tokio_rustls::rustls::KeyLogFile::new());
-        client_config.enable_early_data = true;
-
-        let connector = TlsConnector::from(Arc::new(client_config)).early_data(true);
+        let connector = TlsConnector::from(Arc::new(client_config));
         let domain = ServerName::try_from(options.host.as_str())?.to_owned();
 
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(8);
 
         tokio::spawn(async move {
             use crate::{debug_timer, try_or_continue};
@@ -39,7 +35,10 @@ impl Tls {
             loop {
                 let addr = try_or_continue!(options.ip().await);
                 let stream = try_or_continue!(TcpStream::connect(&addr).await);
-                let stream = debug_timer!("TLS took", try_or_continue!(connector.connect(domain.clone(), stream).await));
+                let stream = debug_timer!(
+                    "TLS took",
+                    try_or_continue!(connector.connect(domain.clone(), stream).await)
+                );
 
                 if sender.send(stream).await.is_err() {
                     break;
