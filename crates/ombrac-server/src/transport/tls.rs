@@ -34,7 +34,7 @@ impl Tls {
 
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(8);
 
         tokio::spawn(async move {
             use crate::{debug, try_or_return};
