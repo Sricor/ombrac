@@ -31,6 +31,8 @@ clap = { version = "4", default-features = false }
 
 # quic
 s2n-quic = { version = "1", default-features = false }
+quinn = { version = "0.11", default-features = false }
+rustls = { version = "0.23", default-features = false }
 aws-lc-rs = { version = "1", default-features = false }
 
 # logging
