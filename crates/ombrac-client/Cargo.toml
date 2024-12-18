@@ -37,6 +37,8 @@ binary = [
 
 [dependencies]
 ombrac = { workspace = true }
+ombrac-transport = { workspace = true }
+
 tokio = { workspace = true, features = ["net", "sync", "io-util"] }
 clap = { workspace = true, features = ["std", "derive", "color", "help", "usage", "error-context", "suggestions"], optional = true }
 s2n-quic = { workspace = true, features = ["provider-tls-default", "provider-address-token-default"], optional = true }

@@ -852,6 +852,7 @@ dependencies = [
  "aws-lc-rs",
  "clap",
  "ombrac",
+ "ombrac-transport",
  "s2n-quic",
  "socks-lib",
  "tokio",
@@ -866,11 +867,24 @@ dependencies = [
  "aws-lc-rs",
  "clap",
  "ombrac",
+ "ombrac-transport",
  "quinn",
- "rustls",
+ "rustls-pemfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ombrac-transport"
+version = "0.2.0"
+dependencies = [
+ "ombrac",
+ "quinn",
+ "rustls",
+ "rustls-pemfile",
+ "tokio",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -971,6 +985,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash 2.1.0",
+ "rustls",
  "socket2",
  "thiserror",
  "tokio",
@@ -983,11 +998,13 @@ version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2fe5ef3495d7d2e377ff17b1a8ce2ee2ec2a18cde8b6ad6619d65d0701c135d"
 dependencies = [
+ "aws-lc-rs",
  "bytes",
  "getrandom 0.2.15",
  "rand 0.8.5",
  "ring",
  "rustc-hash 2.1.0",
+ "rustls",
  "rustls-pki-types",
  "slab",
  "thiserror",
@@ -1755,6 +1772,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d642ff16b7e79272ae451b7322067cdc17cadf68c23264be9d94a32319efe7e"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

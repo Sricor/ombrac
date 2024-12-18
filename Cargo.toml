@@ -1,8 +1,9 @@
 [workspace]
 members = [
+    "crates/ombrac",
     "crates/ombrac-client",
     "crates/ombrac-server",
-    "crates/ombrac",
+    "crates/ombrac-transport",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ keywords = ["proxy", "firewall"]
 ombrac = { version = "0.2.0", path = "crates/ombrac", default-features = false }
 ombrac-client = { version = "0.2.0", path = "crates/ombrac-client", default-features = false }
 ombrac-server = { version = "0.2.0", path = "crates/ombrac-server", default-features = false }
+ombrac-transport = { version = "0.2.0",path = "crates/ombrac-transport", default-features = false }
 
 futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
@@ -33,6 +35,8 @@ clap = { version = "4", default-features = false }
 s2n-quic = { version = "1", default-features = false }
 quinn = { version = "0.11", default-features = false }
 rustls = { version = "0.23", default-features = false }
+webpki-roots = { version = "0.26", default-features = false }
+rustls-pemfile = { version = "2.2", default-features = false }
 aws-lc-rs = { version = "1", default-features = false }
 
 # logging

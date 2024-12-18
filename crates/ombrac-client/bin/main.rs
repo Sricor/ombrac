@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use ombrac_client::endpoint::socks::Server as SocksServer;
-use ombrac_client::transport::quic::{Builder as QuicBuilder, Quic};
 use ombrac_client::Client;
+use ombrac_transport::quic::client::Builder;
+use ombrac_transport::quic::Connection;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -93,10 +94,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn quic_from_args(args: &Args) -> Result<Quic, Box<dyn Error>> {
+async fn quic_from_args(args: &Args) -> Result<Connection, Box<dyn Error>> {
     use std::time::Duration;
 
-    let mut builder = QuicBuilder::new(args.server_address.clone());
+    let mut builder = Builder::new(args.server_address.clone());
 
     if let Some(value) = &args.bind {
         builder = builder.with_bind(value.to_string());

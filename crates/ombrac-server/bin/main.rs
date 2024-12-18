@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use ombrac_server::transport::quic::{Builder, Quic};
 use ombrac_server::Server;
+use ombrac_transport::quic::server::Builder;
+use ombrac_transport::quic::Connection;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -80,7 +81,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn quic_config_from_args(args: &Args) -> Result<Quic, Box<dyn Error>> {
+async fn quic_config_from_args(args: &Args) -> Result<Connection, Box<dyn Error>> {
     let mut builder = Builder::new(
         args.listen.to_string(),
         args.tls_cert.clone(),

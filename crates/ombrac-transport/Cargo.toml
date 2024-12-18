@@ -1,0 +1,20 @@
+[package]
+name = "ombrac-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+
+[dependencies]
+ombrac = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+rustls-pemfile = { workspace = true }
+
+[lints]
+workspace = true
