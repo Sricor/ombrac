@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{net::SocketAddr, path::PathBuf};
 
-use quinn::congestion;
+use quinn::{congestion, VarInt};
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::sync::mpsc;
 
@@ -151,6 +151,7 @@ impl Connection {
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto)?));
 
         let mut transport_config = quinn::TransportConfig::default();
+        transport_config.max_concurrent_bidi_streams(VarInt::from_u32(300));
         transport_config.congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
 
         let mut endpoint = quinn::Endpoint::client(
