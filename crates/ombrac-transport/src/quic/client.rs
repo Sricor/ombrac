@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{net::SocketAddr, path::PathBuf};
 
-use quinn::{congestion, VarInt};
 use quinn::crypto::rustls::QuicClientConfig;
+use quinn::{congestion, VarInt};
 use tokio::sync::mpsc;
 
 use super::{Connection, Result, Stream};
@@ -155,7 +155,7 @@ impl Connection {
         transport_config.congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
 
         let mut endpoint = quinn::Endpoint::client(
-            (&config.bind.clone().unwrap())
+            (&config.bind.clone().unwrap_or("0.0.0.0:0".to_string()))
                 .to_socket_addrs()
                 .unwrap()
                 .next()
