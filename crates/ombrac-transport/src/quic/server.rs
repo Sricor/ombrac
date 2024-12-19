@@ -135,7 +135,7 @@ impl Connection {
                             }
                             Err(e) => {
                                 eprintln!("connection error {}", e);
-                                continue;
+                                return;
                             }
                             Ok(s) => sender.send(Stream(s.0, s.1)).await.unwrap(),
                         };
