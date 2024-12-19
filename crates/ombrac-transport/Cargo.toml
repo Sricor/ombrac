@@ -8,13 +8,17 @@ repository.workspace = true
 description.workspace = true
 keywords.workspace = true
 
+[features]
+quic = ["quinn", "rustls", "rustls-pemfile", "webpki-roots"]
+
 [dependencies]
 ombrac = { workspace = true }
+
 tokio = { workspace = true }
-quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
-rustls = { workspace = true }
-webpki-roots = { workspace = true }
-rustls-pemfile = { workspace = true }
+quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, features = ["std"], optional = true }
 
 [lints]
 workspace = true

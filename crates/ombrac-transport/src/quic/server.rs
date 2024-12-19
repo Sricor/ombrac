@@ -96,8 +96,8 @@ pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"h3"];
 
 impl Connection {
     async fn with_server(config: Builder) -> Result<Self> {
-        let key = crate::tls::load_private_key(&config.tls_key)?;
-        let certs = crate::tls::load_certificates(&config.tls_cert)?;
+        let key = super::load_private_key(&config.tls_key)?;
+        let certs = super::load_certificates(&config.tls_cert)?;
 
         let mut server_crypto = rustls::ServerConfig::builder()
             .with_no_client_auth()

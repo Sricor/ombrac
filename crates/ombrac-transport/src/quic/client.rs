@@ -1,7 +1,8 @@
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{congestion, VarInt};
@@ -120,7 +121,7 @@ impl Builder {
             .await?
             .next()
             .ok_or(format!(
-                "unable to resolve address '{}'",
+                "failed to resolve address '{}'",
                 self.server_address
             ))?;
 
@@ -135,7 +136,7 @@ impl Connection {
         let mut roots = rustls::RootCertStore::empty();
 
         if let Some(path) = &config.tls_cert {
-            let certs = crate::tls::load_certificates(path)?;
+            let certs = super::load_certificates(path)?;
             roots.add_parsable_certificates(certs);
         } else {
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -151,7 +152,7 @@ impl Connection {
             quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto)?));
 
         let mut transport_config = quinn::TransportConfig::default();
-        transport_config.max_concurrent_bidi_streams(VarInt::from_u32(300));
+
         transport_config.congestion_controller_factory(Arc::new(congestion::BbrConfig::default()));
 
         let mut endpoint = quinn::Endpoint::client(

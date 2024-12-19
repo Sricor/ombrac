@@ -1,2 +1,2 @@
+#[cfg(feature = "quic")]
 pub mod quic;
-mod tls;
