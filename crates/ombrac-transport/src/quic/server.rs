@@ -27,7 +27,7 @@ impl Builder {
             tls_key,
             congestion_initial_window: None,
             max_idle_timeout: None,
-            max_keep_alive_period: None,
+            max_keep_alive_period: Some(Duration::from_millis(8000)),
             max_open_bidirectional_streams: None,
         }
     }

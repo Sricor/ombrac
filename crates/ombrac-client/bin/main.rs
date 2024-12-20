@@ -40,11 +40,7 @@ struct Args {
 
     /// Initial congestion window in bytes
     #[clap(long, help_heading = "Transport QUIC", value_name = "NUM")]
-    initial_congestion_window: Option<u32>,
-
-    /// Handshake timeout in millisecond
-    #[clap(long, help_heading = "Transport QUIC", value_name = "TIME")]
-    max_handshake_duration: Option<u64>,
+    congestion_initial_window: Option<u64>,
 
     /// Connection idle timeout in millisecond
     #[clap(long, help_heading = "Transport QUIC", value_name = "TIME")]
@@ -57,14 +53,6 @@ struct Args {
     /// Connection max open bidirectional streams
     #[clap(long, help_heading = "Transport QUIC", value_name = "NUM")]
     max_open_bidirectional_streams: Option<u64>,
-
-    /// Bidirectional stream local data window
-    #[clap(long, help_heading = "Transport QUIC", value_name = "NUM")]
-    bidirectional_local_data_window: Option<u64>,
-
-    /// Bidirectional stream remote data window
-    #[clap(long, help_heading = "Transport QUIC", value_name = "NUM")]
-    bidirectional_remote_data_window: Option<u64>,
 
     /// Logging level e.g., INFO, WARN, ERROR
     #[cfg(feature = "tracing")]
@@ -111,12 +99,8 @@ async fn quic_from_args(args: &Args) -> Result<Connection, Box<dyn Error>> {
         builder = builder.with_tls_cert(value.clone());
     }
 
-    if let Some(value) = args.initial_congestion_window {
-        builder = builder.with_initial_congestion_window(value);
-    }
-
-    if let Some(value) = args.max_handshake_duration {
-        builder = builder.with_max_handshake_duration(Duration::from_millis(value));
+    if let Some(value) = args.congestion_initial_window {
+        builder = builder.with_congestion_initial_window(value);
     }
 
     if let Some(value) = args.max_idle_timeout {
@@ -129,14 +113,6 @@ async fn quic_from_args(args: &Args) -> Result<Connection, Box<dyn Error>> {
 
     if let Some(value) = args.max_open_bidirectional_streams {
         builder = builder.with_max_open_bidirectional_streams(value);
-    }
-
-    if let Some(value) = args.bidirectional_local_data_window {
-        builder = builder.with_bidirectional_local_data_window(value);
-    }
-
-    if let Some(value) = args.bidirectional_remote_data_window {
-        builder = builder.with_bidirectional_remote_data_window(value);
     }
 
     Ok(builder.build().await?)
