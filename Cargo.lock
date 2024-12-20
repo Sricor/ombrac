@@ -717,10 +717,12 @@ name = "ombrac-transport"
 version = "0.2.0"
 dependencies = [
  "ombrac",
+ "ombrac-macros",
  "quinn",
  "rustls",
  "rustls-pemfile",
  "tokio",
+ "tracing",
  "webpki-roots",
 ]
 

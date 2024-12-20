@@ -20,7 +20,7 @@ default = [
     "tracing"
 ]
 
-tracing = ["dep:tracing", "ombrac-macros/tracing"]
+tracing = ["dep:tracing"]
 
 endpoint-default = ["endpoint-socks"]
 endpoint-socks = ["socks-lib"]

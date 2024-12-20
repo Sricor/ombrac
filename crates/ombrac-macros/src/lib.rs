@@ -1,2 +1,1 @@
-#[cfg(feature = "tracing")]
-pub mod trace;
+mod trace;

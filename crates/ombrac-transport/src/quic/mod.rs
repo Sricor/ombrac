@@ -19,7 +19,6 @@ impl ombrac::Provider for Connection {
     }
 }
 
-
 fn load_certificates(path: &PathBuf) -> io::Result<Vec<CertificateDer<'static>>> {
     let cert_chain = fs::read(path)?;
 

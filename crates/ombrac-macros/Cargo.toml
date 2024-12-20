@@ -8,10 +8,5 @@ repository.workspace = true
 description.workspace = true
 keywords.workspace = true
 
-[features]
-tracing = []
-
-[dependencies]
-
 [lints]
 workspace = true
