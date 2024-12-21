@@ -29,15 +29,16 @@ jobs:
             target: x86_64-apple-darwin
             file-ext:
 
-          - arch-name: x86_64-pc-windows-gnu
-            os: ubuntu-latest
-            target: x86_64-pc-windows-gnu
-            file-ext: .exe
-
           - arch-name: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             file-ext:
+
+          - arch-name: x86_64-pc-windows-gnu
+            os: windows-latest
+            target: x86_64-pc-windows-gnu
+            file-ext: .exe
+
 
     runs-on: ${{ matrix.os }}
 
