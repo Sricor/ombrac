@@ -55,10 +55,9 @@ jobs:
 
       - name: Build
         run: |
-          cargo install cross
-          cross build --release --target ${{ matrix.target }}
-          cross build --release --bin ombrac-client --features binary --target ${{ matrix.target }}
-          cross build --release --bin ombrac-server --features binary --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --bin ombrac-client --features binary --target ${{ matrix.target }}
+          cargo build --release --bin ombrac-server --features binary --target ${{ matrix.target }}
 
       - name: Move binaries
         run: |
