@@ -171,26 +171,44 @@ impl Connection {
 
         let (sender, receiver) = async_channel::unbounded();
 
+        let (datagram_sender, datagram_receiver) = async_channel::unbounded();
         tokio::spawn(async move {
-            use ombrac_macros::{try_or_break, try_or_return};
-
-            while let Some(connection) = endpoint.accept().await {
+            while let Some(connecting) = endpoint.accept().await {
                 let sender = sender.clone();
+                let datagram_sender = datagram_sender.clone();
 
                 tokio::spawn(async move {
-                    let connection = try_or_return!(connection.await);
+                    let connection = match connecting.await {
+                        Ok(conn) => conn,
+                        Err(e) => {
+                            eprintln!("Connection failed: {:?}", e);
+                            return;
+                        }
+                    };
+
+                    let datagram = Self::datagram(connection.clone());
+
+                    if datagram_sender.send(datagram).await.is_err() {
+                        return;
+                    }
 
                     loop {
-                        let stream = try_or_break!(connection.accept_bi().await);
-
-                        if sender.send(Stream(stream.0, stream.1)).await.is_err() {
-                            break;
+                        match connection.accept_bi().await {
+                            Ok((send_stream, recv_stream)) => {
+                                if sender.send(Stream(send_stream, recv_stream)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to accept bidirectional stream: {:?}", e);
+                                break;
+                            }
                         }
                     }
                 });
             }
         });
 
-        Ok(Connection(receiver))
+        Ok(Connection(receiver, datagram_receiver))
     }
 }

@@ -521,6 +521,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3492acde4c3fc54c845eaab3eed8bd00c7a7d881f78bfc801e43a93dec1331ae"
 dependencies = [
  "concurrent-queue",
+ "parking",
  "pin-project-lite",
 ]
 
@@ -869,6 +870,7 @@ name = "ombrac-client"
 version = "0.3.2"
 dependencies = [
  "blake3",
+ "bytes",
  "clap",
  "ombrac",
  "ombrac-macros",
@@ -888,6 +890,7 @@ name = "ombrac-server"
 version = "0.3.2"
 dependencies = [
  "blake3",
+ "bytes",
  "clap",
  "ombrac",
  "ombrac-macros",
@@ -903,6 +906,7 @@ version = "0.3.2"
 dependencies = [
  "async-channel",
  "aws-lc-rs",
+ "bytes",
  "ombrac",
  "ombrac-macros",
  "quinn",
@@ -932,6 +936,12 @@ name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
+
+[[package]]
+name = "parking"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"

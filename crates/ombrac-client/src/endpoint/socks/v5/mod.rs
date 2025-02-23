@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::io;
 
-use ombrac::request::Address;
+use ombrac::prelude::*;
 use socks_lib::socks5::{Address as Socks5Address, Method as Socks5Method};
 use socks_lib::socks5::{Request as Socks5Request, Response as Socks5Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,6 +42,9 @@ impl Server {
                 return Ok(Request::TcpConnect(stream, socks_address));
             }
 
+            // Socks5Request::Associate(address) => {
+            //     todo!()
+            // }
             _ => {
                 Socks5Response::CommandNotSupported
                     .write(&mut stream)

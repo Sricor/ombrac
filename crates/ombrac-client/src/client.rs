@@ -1,44 +1,59 @@
 use std::io;
 
-use ombrac::request::{Address, Request};
-use ombrac::Provider;
-use tokio::io::{AsyncRead, AsyncWrite};
+use bytes::Bytes;
+use ombrac::prelude::*;
+use ombrac_transport::{Reliable, Transport, Unreliable};
 
 pub struct Client<T> {
-    secret: [u8; 32],
+    secret: Secret,
     transport: T,
 }
 
-impl<Transport, Stream> Client<Transport>
-where
-    Transport: Provider<Item = Stream>,
-    Stream: AsyncRead + AsyncWrite + Unpin,
-{
-    pub fn new(secret: [u8; 32], transport: Transport) -> Self {
+impl<T: Transport> Client<T> {
+    pub fn new(secret: Secret, transport: T) -> Self {
         Self { secret, transport }
     }
 
-    async fn outbound(&self) -> io::Result<Stream> {
-        match self.transport.fetch().await {
-            Some(value) => Ok(value),
-            None => Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "Connection has been lost",
-            )),
-        }
-    }
-
-    pub async fn tcp_connect<A>(&self, addr: A) -> io::Result<Stream>
+    pub async fn tcp_connect<R, A>(&self, stream: &mut R, addr: A) -> io::Result<()>
     where
+        R: Reliable,
         A: Into<Address>,
     {
         use tokio::io::AsyncWriteExt;
 
-        let request: Vec<u8> = Request::TcpConnect(self.secret, addr.into()).into();
-        let mut stream = self.outbound().await?;
+        let request = Connect::with(self.secret, addr).to_bytes()?;
 
         stream.write_all(&request).await?;
 
-        Ok(stream)
+        Ok(())
+    }
+
+    pub async fn udp_associate<U, A, B>(&self, stream: &U, addr: A, data: B) -> io::Result<()>
+    where
+        U: Unreliable,
+        A: Into<Address>,
+        B: Into<Bytes>,
+    {
+        let request = Packet::with(self.secret, addr, data).to_bytes()?;
+
+        if let Err(error) = stream.send(request).await {
+            return Err(io::Error::other(error.to_string()));
+        };
+
+        Ok(())
+    }
+
+    pub async fn reliable(&self) -> io::Result<impl Reliable + '_> {
+        match self.transport.reliable().await {
+            Ok(stream) => Ok(stream),
+            Err(error) => Err(io::Error::other(error.to_string())),
+        }
+    }
+
+    pub async fn unreliable(&self) -> io::Result<impl Unreliable + '_> {
+        match self.transport.unreliable().await {
+            Ok(stream) => Ok(stream),
+            Err(error) => Err(io::Error::other(error.to_string())),
+        }
     }
 }

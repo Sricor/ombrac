@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use ombrac::request::{Address, Request};
+use ombrac::connect::{Address, Request};
 
 // Benchmark tests using criterion
 pub fn request_serialization_benchmark(c: &mut Criterion) {

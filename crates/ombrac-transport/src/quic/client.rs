@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use quinn::Connecting;
+
 use super::{Connection, Result, Stream};
 
 pub struct Builder {
@@ -227,32 +229,18 @@ impl Connection {
         let enable_zero_rtt = config.enable_zero_rtt;
         let enable_connection_multiplexing = config.enable_connection_multiplexing;
 
-        let (sender, receiver) = async_channel::bounded(1);
+        let tcp_endpoint = endpoint.clone();
+        let tcp_server_name = server_name.clone();
 
+        let (sender, receiver) = async_channel::bounded(1);
         tokio::spawn(async move {
             use ombrac_macros::{try_or_break, try_or_continue};
 
             'connection: loop {
-                let connection = try_or_continue!(endpoint.connect(server_address, &server_name));
-
-                let connection = if enable_zero_rtt {
-                    match connection.into_0rtt() {
-                        Ok((conn, zero_rtt_accepted)) => {
-                            if !zero_rtt_accepted.await {
-                                continue 'connection;
-                            };
-
-                            conn
-                        }
-                        Err(conn) => {
-                            try_or_continue!(conn.await)
-                        }
-                    }
-                } else {
-                    try_or_continue!(connection.await)
-                };
-
                 let sender = sender.clone();
+                let connecting =
+                    try_or_continue!(tcp_endpoint.connect(server_address, &tcp_server_name));
+                let connection = try_or_continue!(connection(connecting, enable_zero_rtt).await);
 
                 'stream: loop {
                     let stream = try_or_break!(connection.open_bi().await);
@@ -268,8 +256,43 @@ impl Connection {
             }
         });
 
-        Ok(Connection(receiver))
+        let (datagram_sender, datagram_receiver) = async_channel::bounded(1);
+        tokio::spawn(async move {
+            use ombrac_macros::try_or_continue;
+
+            loop {
+                let connecting = try_or_continue!(endpoint.connect(server_address, &server_name));
+                let connection = try_or_continue!(connection(connecting, enable_zero_rtt).await);
+
+                let datagram = Self::datagram(connection);
+
+                if datagram_sender.send(datagram).await.is_err() {
+                    break;
+                };
+            }
+        });
+
+        Ok(Connection(receiver, datagram_receiver))
     }
+}
+
+async fn connection(connecting: Connecting, enable_zero_rtt: bool) -> Result<quinn::Connection> {
+    let connection = if enable_zero_rtt {
+        match connecting.into_0rtt() {
+            Ok((conn, zero_rtt_accepted)) => {
+                if !zero_rtt_accepted.await {
+                    return Err("Zero rtt not accepted".into());
+                }
+
+                conn
+            }
+            Err(conn) => conn.await?,
+        }
+    } else {
+        connecting.await?
+    };
+
+    Ok(connection)
 }
 
 mod cert_verifier {

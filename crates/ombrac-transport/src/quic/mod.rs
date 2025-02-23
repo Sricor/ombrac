@@ -1,22 +1,87 @@
 use std::path::PathBuf;
 use std::{fs, io};
 
-use async_channel::Receiver;
+use async_channel::{Receiver, Sender};
+use bytes::Bytes;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+use crate::{Reliable, Result, Transport, Unreliable};
 
 pub mod client;
 pub mod server;
 
-pub struct Connection(Receiver<Stream>);
+pub struct Connection(Receiver<Stream>, Receiver<Datagram>);
 pub struct Stream(quinn::SendStream, quinn::RecvStream);
+pub struct Datagram(Sender<Bytes>, Receiver<Bytes>);
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+impl Transport for Connection {
+    async fn reliable(&self) -> Result<impl Reliable> {
+        match self.0.recv().await {
+            Ok(data) => Ok(data),
+            Err(error) => Err(error.into()),
+        }
+    }
 
-impl ombrac::Provider for Connection {
-    type Item = Stream;
+    async fn unreliable(&self) -> Result<impl Unreliable> {
+        match self.1.recv().await {
+            Ok(data) => Ok(data),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
 
-    async fn fetch(&self) -> Option<Self::Item> {
-        self.0.recv().await.ok()
+impl Reliable for Stream {}
+impl Unreliable for Datagram {
+    async fn recv(&self) -> Result<Bytes> {
+        match self.1.recv().await {
+            Ok(data) => Ok(data),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn send(&self, data: Bytes) -> Result<()> {
+        if let Err(e) = self.0.send(data).await {
+            return Err(e.into());
+        }
+
+        Ok(())
+    }
+}
+
+impl Connection {
+    fn datagram(conn: quinn::Connection) -> Datagram {
+        let (write_sender, write_receiver) = async_channel::bounded(128);
+        let (read_sender, read_receiver) = async_channel::bounded(128);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = write_receiver.recv() => {
+                        match result {
+                            Ok(data) => {
+                                if conn.send_datagram(Bytes::from(data)).is_err() {
+                                    break;
+                                }
+                            },
+                            Err(_) => break
+                        }
+                    },
+
+                    result = conn.read_datagram() => {
+                        match result {
+                            Ok(data) => {
+                                if read_sender.send(data).await.is_err() {
+                                    break;
+                                }
+                            },
+                            Err(_) => break
+                        }
+                    }
+                }
+            }
+        });
+
+        Datagram(write_sender, read_receiver)
     }
 }
 
@@ -90,7 +155,9 @@ mod impl_tokio_io {
 
 #[cfg(test)]
 mod tests {
-    use super::{client, server, Connection, Stream};
+    use crate::{Reliable, Transport};
+
+    use super::{client, server, Connection};
     use std::{net::SocketAddr, time::Duration};
     use tests_support::cert::CertificateGenerator;
     use tests_support::net::find_available_udp_addr;
@@ -132,9 +199,8 @@ mod tests {
         (server_conn, client_conn)
     }
 
-    async fn fetch_stream(conn: &Connection) -> Stream {
-        use ombrac::Provider;
-        tokio::time::timeout(TIMEOUT, conn.fetch())
+    async fn fetch_stream(conn: &Connection) -> impl Reliable + '_ {
+        tokio::time::timeout(TIMEOUT, conn.reliable())
             .await
             .expect("Timed out waiting for stream")
             .expect("Failed to fetch stream")
@@ -213,5 +279,31 @@ mod tests {
         let mut client_buf = vec![0u8; server_reply.len()];
         client_stream.read_exact(&mut client_buf).await.unwrap();
         assert_eq!(&client_buf, server_reply);
+    }
+
+    mod tests_datagram {
+        use bytes::Bytes;
+
+        use crate::{Transport, Unreliable};
+
+        use super::{find_available_udp_addr, setup_connections};
+
+        #[tokio::test]
+        async fn test_bidirectional_data_exchange() {
+            let listen_addr = find_available_udp_addr("127.0.0.1".parse().unwrap());
+            let (server_conn, client_conn) = setup_connections(listen_addr, false, false).await;
+            let client_datagram = client_conn.unreliable().await.unwrap();
+            let client_msg = b"hello from client".to_vec();
+
+            client_datagram
+                .send(Bytes::from(client_msg.clone()))
+                .await
+                .unwrap();
+
+            let server_datagram = server_conn.unreliable().await.unwrap();
+            let server_msg = server_datagram.recv().await.unwrap();
+
+            assert_eq!(client_msg, server_msg);
+        }
     }
 }
