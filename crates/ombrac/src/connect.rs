@@ -51,8 +51,7 @@ impl Connect {
         let mut secret = [0u8; SECRET_LENGTH];
         reader.read_exact(&mut secret).await?;
 
-        let mut address_buf = BytesMut::new();
-        let address = Address::from_async_read(reader, &mut address_buf).await?;
+        let address = Address::from_async_read(reader).await?;
 
         Ok(Self { secret, address })
     }

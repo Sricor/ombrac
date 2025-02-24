@@ -156,10 +156,7 @@ impl Address {
         }
     }
 
-    pub async fn from_async_read<R: AsyncRead + Unpin>(
-        reader: &mut R,
-        buf: &mut BytesMut,
-    ) -> io::Result<Self> {
+    pub async fn from_async_read<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Self> {
         let mut header = [0u8; 3];
         reader.read_exact(&mut header).await?;
 
@@ -331,11 +328,8 @@ mod tests_async {
         data.put_slice(b"example.com");
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let address = Address::from_async_read(&mut reader, &mut buf)
-            .await
-            .unwrap();
+        let address = Address::from_async_read(&mut reader).await.unwrap();
 
         match address {
             Address::Domain(domain, port) => {
@@ -354,11 +348,8 @@ mod tests_async {
         data.put_slice(&[127, 0, 0, 1]);
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let address = Address::from_async_read(&mut reader, &mut buf)
-            .await
-            .unwrap();
+        let address = Address::from_async_read(&mut reader).await.unwrap();
 
         match address {
             Address::IPv4(addr) => {
@@ -377,11 +368,8 @@ mod tests_async {
         data.put_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let address = Address::from_async_read(&mut reader, &mut buf)
-            .await
-            .unwrap();
+        let address = Address::from_async_read(&mut reader).await.unwrap();
 
         match address {
             Address::IPv6(addr) => {
@@ -399,9 +387,8 @@ mod tests_async {
         data.put_u16(8080);
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let result = Address::from_async_read(&mut reader, &mut buf).await;
+        let result = Address::from_async_read(&mut reader).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
@@ -412,9 +399,8 @@ mod tests_async {
         data.put_u8(ADDRESS_ATYP_IPV4);
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let result = Address::from_async_read(&mut reader, &mut buf).await;
+        let result = Address::from_async_read(&mut reader).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
     }
@@ -428,9 +414,8 @@ mod tests_async {
         data.put_slice(&[0xFF, 0xFF, 0xFF]);
 
         let mut reader = write_to_buf(&data).await;
-        let mut buf = BytesMut::new();
 
-        let result = Address::from_async_read(&mut reader, &mut buf).await;
+        let result = Address::from_async_read(&mut reader).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
