@@ -172,10 +172,9 @@ impl Address {
                 reader.read_exact(&mut len).await?;
                 let len = len[0] as usize;
 
-                buf.clear();
-                buf.resize(len, 0);
-                reader.read_exact(&mut buf[..len]).await?;
-                let domain = String::from_utf8(buf.to_vec()).map_err(|e| {
+                let mut domain = vec![0u8; len];
+                reader.read_exact(&mut domain).await?;
+                let domain = String::from_utf8(domain).map_err(|e| {
                     io::Error::new(io::ErrorKind::InvalidData, format!("Invalid domain: {}", e))
                 })?;
 

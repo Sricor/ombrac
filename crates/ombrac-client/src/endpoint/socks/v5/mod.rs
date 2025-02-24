@@ -1,7 +1,6 @@
 use std::future::Future;
 use std::io;
 
-use bytes::BytesMut;
 use ombrac::prelude::*;
 use socks_lib::socks5::{Address as Socks5Address, Method as Socks5Method};
 use socks_lib::socks5::{Request as Socks5Request, Response as Socks5Response};

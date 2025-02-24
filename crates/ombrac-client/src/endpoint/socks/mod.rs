@@ -52,7 +52,7 @@ impl Server {
                             addr, _bytes.0, _bytes.1
                         );
                     }
-                    Request::UdpAssociate(stream, socket) => {
+                    Request::UdpAssociate(_stream, socket) => {
                         info!("Udp Associate");
 
                         let unr = ombrac.unreliable().await.unwrap();
