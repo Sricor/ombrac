@@ -3,6 +3,7 @@ use std::{fs, io};
 
 use async_channel::{Receiver, Sender};
 use bytes::Bytes;
+use ombrac_macros::error;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::{Reliable, Result, Transport, Unreliable};
@@ -49,39 +50,33 @@ impl Unreliable for Datagram {
 }
 
 impl Connection {
-    fn datagram(conn: quinn::Connection) -> Datagram {
-        let (write_sender, write_receiver) = async_channel::bounded(128);
-        let (read_sender, read_receiver) = async_channel::bounded(128);
+    fn spawn_datagram(conn: quinn::Connection) -> Datagram {
+        const DEFAULT_SIZE: usize = 64;
+
+        let conn_recv = conn.clone();
+
+        let (sender, datagram_to_send) = async_channel::bounded(DEFAULT_SIZE);
+        let (forwarder, receiver) = async_channel::bounded(DEFAULT_SIZE);
 
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    result = write_receiver.recv() => {
-                        match result {
-                            Ok(data) => {
-                                if conn.send_datagram(Bytes::from(data)).is_err() {
-                                    break;
-                                }
-                            },
-                            Err(_) => break
-                        }
-                    },
+            tokio::spawn(async move {
+                while let Ok(datagram) = datagram_to_send.recv().await {
+                    if let Err(_error) = conn.send_datagram(datagram) {
+                        error!("{_error}");
 
-                    result = conn.read_datagram() => {
-                        match result {
-                            Ok(data) => {
-                                if read_sender.send(data).await.is_err() {
-                                    break;
-                                }
-                            },
-                            Err(_) => break
-                        }
+                        break;
                     }
+                }
+            });
+
+            while let Ok(datagram) = conn_recv.read_datagram().await {
+                if forwarder.send(datagram).await.is_err() {
+                    break;
                 }
             }
         });
 
-        Datagram(write_sender, read_receiver)
+        Datagram(sender, receiver)
     }
 }
 

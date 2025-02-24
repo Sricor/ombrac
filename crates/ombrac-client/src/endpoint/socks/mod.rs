@@ -1,10 +1,9 @@
 mod v5;
 
-use std::{error::Error, io::Cursor};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::{error::Error, io::Cursor};
 
-use bytes::{Bytes, BytesMut};
 use ombrac::prelude::*;
 use ombrac_macros::{info, try_or_return};
 use ombrac_transport::{Transport, Unreliable};
@@ -18,7 +17,7 @@ pub struct Server {}
 
 pub enum Request {
     TcpConnect(TcpStream, Address),
-    UdpAssociate(TcpStream, UdpSocket)
+    UdpAssociate(TcpStream, UdpSocket),
 }
 
 impl Server {
@@ -52,7 +51,7 @@ impl Server {
                             "TCP Connect {:?} Send {}, Receive {}",
                             addr, _bytes.0, _bytes.1
                         );
-                    },
+                    }
                     Request::UdpAssociate(stream, socket) => {
                         info!("Udp Associate");
 
@@ -72,21 +71,27 @@ impl Server {
                             }
                         });
 
-                        let mut buf = [0u8; 10240];
+                        let mut buf = [0u8; 2048];
 
                         loop {
                             let (len, _addr) = socks_2.recv_from(&mut buf).await.unwrap();
                             let data = buf[..len].to_vec();
-                            let socks_packet = UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
+                            let socks_packet =
+                                UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
 
                             let addr = match socks_packet.address {
-                                Socks5Address::Domain(domain, port) => Address::Domain(domain, port),
+                                Socks5Address::Domain(domain, port) => {
+                                    Address::Domain(domain, port)
+                                }
                                 Socks5Address::IPv4(addr) => Address::IPv4(addr),
                                 Socks5Address::IPv6(addr) => Address::IPv6(addr),
                             };
                             let data = socks_packet.data;
 
-                            ombrac.udp_associate(stream_2.clone().as_ref(), addr, data).await.unwrap();
+                            ombrac
+                                .udp_associate(stream_2.clone().as_ref(), addr, data)
+                                .await
+                                .unwrap();
                         }
                     }
                 };

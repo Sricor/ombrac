@@ -264,7 +264,7 @@ impl Connection {
                 let connecting = try_or_continue!(endpoint.connect(server_address, &server_name));
                 let connection = try_or_continue!(connection(connecting, enable_zero_rtt).await);
 
-                let datagram = Self::datagram(connection);
+                let datagram = Self::spawn_datagram(connection);
 
                 if datagram_sender.send(datagram).await.is_err() {
                     break;

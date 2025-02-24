@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::{io, sync::Arc};
 
-use bytes::BytesMut;
 use ombrac::prelude::*;
 use ombrac_transport::{Reliable, Transport, Unreliable};
 use tokio::net::{TcpStream, UdpSocket};
@@ -18,7 +17,15 @@ impl<T: Transport> Server<T> {
         Self { secret, transport }
     }
 
-    async fn handle_reliable(mut stream: impl Reliable, secret: Secret) -> io::Result<()> {
+    async fn handle_reliable(stream: impl Reliable, secret: Secret) -> io::Result<()> {
+        Self::handle_tcp_connect(stream, secret).await
+    }
+
+    async fn handle_unreliable(stream: impl Unreliable, secret: Secret) -> io::Result<()> {
+        Self::handle_udp_associate(stream, secret).await
+    }
+
+    async fn handle_tcp_connect(mut stream: impl Reliable, secret: Secret) -> io::Result<()> {
         let request = Connect::from_async_read(&mut stream).await?;
 
         if request.secret != secret {
@@ -28,36 +35,28 @@ impl<T: Transport> Server<T> {
             ));
         }
 
-        Self::handle_tcp_connect(stream, request.address).await
-    }
+        let addr = request.address.to_socket_addr().await?;
+        let mut target = TcpStream::connect(addr).await?;
 
-    async fn handle_unreliable(stream: impl Unreliable, secret: Secret) -> io::Result<()> {
-        Self::handle_udp_associate(stream, secret).await
-    }
-
-    async fn handle_tcp_connect<A>(mut stream: impl Reliable, addr: A) -> io::Result<()>
-    where
-        A: Into<Address>,
-    {
-        let addr = addr.into().to_socket_addr().await?;
-        let mut outbound = TcpStream::connect(addr).await?;
-
-        ombrac::io::util::copy_bidirectional(&mut stream, &mut outbound).await?;
+        ombrac::io::util::copy_bidirectional(&mut stream, &mut target).await?;
 
         Ok(())
     }
 
     async fn handle_udp_associate(stream: impl Unreliable, secret: Secret) -> io::Result<()> {
+        const DEFAULT_BUFFER_SIZE: usize = 2 * 1024;
+
+        // TODO: ipv6?
         let local: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let socket = UdpSocket::bind(local).await?;
 
-        let socks_1 = Arc::new(socket);
-        let socks_2 = socks_1.clone();
-        let stream_1 = Arc::new(stream);
-        let stream_2 = stream_1.clone();
+        let sock_send = Arc::new(socket);
+        let sock_recv = Arc::clone(&sock_send);
+        let stream_send = Arc::new(stream);
+        let stream_recv = Arc::clone(&stream_send);
 
         tokio::spawn(async move {
-            while let Ok(mut packet) = stream_1.recv().await {
+            while let Ok(mut packet) = stream_recv.recv().await {
                 let packet = Packet::from_bytes(&mut packet)?;
 
                 if packet.secret != secret {
@@ -68,20 +67,20 @@ impl<T: Transport> Server<T> {
                 };
 
                 let target = packet.address.to_socket_addr().await?;
-                socks_1.send_to(&packet.data, target).await?;
+                sock_send.send_to(&packet.data, target).await?;
             }
 
             Ok(())
         });
 
-        let mut buf = BytesMut::new();
+        let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
 
         loop {
-            let (len, addr) = socks_2.clone().recv_from(&mut buf).await?;
+            let (len, addr) = sock_recv.recv_from(&mut buf).await?;
             let data = buf[..len].to_vec();
             let packet = Packet::with(secret, addr, data);
 
-            if let Err(e) = stream_2.send(packet.to_bytes()?).await {
+            if let Err(e) = stream_send.send(packet.to_bytes()?).await {
                 return Err(io::Error::other(e.to_string()));
             }
         }

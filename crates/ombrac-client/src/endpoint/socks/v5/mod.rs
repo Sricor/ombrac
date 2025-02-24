@@ -49,7 +49,7 @@ impl Server {
                 let addr = Socks5Address::from_socket_address(addr);
                 Socks5Response::Success(addr).write(&mut stream).await?;
 
-                return Ok(Request::UdpAssociate(stream, socket))
+                return Ok(Request::UdpAssociate(stream, socket));
             }
 
             _ => {

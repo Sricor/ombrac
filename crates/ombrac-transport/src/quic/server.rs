@@ -170,8 +170,8 @@ impl Connection {
         };
 
         let (sender, receiver) = async_channel::unbounded();
-
         let (datagram_sender, datagram_receiver) = async_channel::unbounded();
+
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
                 let sender = sender.clone();
@@ -186,23 +186,15 @@ impl Connection {
                         }
                     };
 
-                    let datagram = Self::datagram(connection.clone());
+                    let datagram = Self::spawn_datagram(connection.clone());
 
                     if datagram_sender.send(datagram).await.is_err() {
                         return;
                     }
 
-                    loop {
-                        match connection.accept_bi().await {
-                            Ok((send_stream, recv_stream)) => {
-                                if sender.send(Stream(send_stream, recv_stream)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to accept bidirectional stream: {:?}", e);
-                                break;
-                            }
+                    while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
+                        if sender.send(Stream(send_stream, recv_stream)).await.is_err() {
+                            break;
                         }
                     }
                 });
