@@ -12,7 +12,7 @@ pub trait Transport: Send {
     fn reliable(&self) -> impl Future<Output = Result<impl Reliable>> + Send;
 }
 
-pub trait Unreliable: Send + 'static {
+pub trait Unreliable: Send + Sync + 'static {
     fn send(&self, data: Bytes) -> impl Future<Output = Result<()>> + Send;
     fn recv(&self) -> impl Future<Output = Result<Bytes>> + Send;
 }

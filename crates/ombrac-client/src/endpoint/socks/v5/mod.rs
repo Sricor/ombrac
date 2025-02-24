@@ -1,11 +1,12 @@
 use std::future::Future;
 use std::io;
 
+use bytes::BytesMut;
 use ombrac::prelude::*;
 use socks_lib::socks5::{Address as Socks5Address, Method as Socks5Method};
 use socks_lib::socks5::{Request as Socks5Request, Response as Socks5Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 
 use super::{Request, Server};
 
@@ -42,9 +43,15 @@ impl Server {
                 return Ok(Request::TcpConnect(stream, socks_address));
             }
 
-            // Socks5Request::Associate(address) => {
-            //     todo!()
-            // }
+            Socks5Request::Associate(_addr) => {
+                let socket = UdpSocket::bind("0.0.0.0:0").await?; // TODO: use _addr
+                let addr = socket.local_addr().unwrap();
+                let addr = Socks5Address::from_socket_address(addr);
+                Socks5Response::Success(addr).write(&mut stream).await?;
+
+                return Ok(Request::UdpAssociate(stream, socket))
+            }
+
             _ => {
                 Socks5Response::CommandNotSupported
                     .write(&mut stream)

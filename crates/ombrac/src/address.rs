@@ -208,7 +208,10 @@ impl Address {
 
 impl Into<Address> for SocketAddr {
     fn into(self) -> Address {
-        todo!()
+        match self {
+            Self::V4(addr) => Address::IPv4(addr),
+            Self::V6(addr) => Address::IPv6(addr)
+        }
     }
 }
 
