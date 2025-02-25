@@ -92,11 +92,10 @@ impl Server {
                                     Address::IPv6(addr) => Socks5Address::IPv6(addr),
                                 };
                                 let data = UdpPacket::un_frag(addr.into(), data.into());
+                                info!("recv from remote, send to socks {:?}", data);
                                 socks_1.send_to(&data.to_bytes(), client_socks_addr).await.unwrap();
                             }
                         });
-
-                        
 
                         loop {
                             // recv from socks
@@ -105,6 +104,7 @@ impl Server {
                             let socks_packet =
                                 UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
 
+                                info!("recv from socks, send remote {:?}", socks_packet);
                             let addr = match socks_packet.address {
                                 Socks5Address::Domain(domain, port) => {
                                     Address::Domain(domain, port)

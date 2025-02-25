@@ -56,34 +56,38 @@ impl<T: Transport> Server<T> {
         let stream_recv = Arc::clone(&stream_send);
 
         tokio::spawn(async move {
-            while let Ok(mut packet) = stream_recv.recv().await {
-                let packet = Packet::from_bytes(&mut packet)?;
+            let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
 
-                if packet.secret != secret {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Secret does not match",
-                    ));
-                };
+            loop {
+                let (len, addr) = sock_recv.recv_from(&mut buf).await?;
+                let data = buf[..len].to_vec();
+                let packet = Packet::with(secret, addr, data);
 
-                let target = packet.address.to_socket_addr().await?;
-                sock_send.send_to(&packet.data, target).await?;
+                if let Err(_error) = stream_send.send(packet.to_bytes()?).await {
+                    error!("{_error}");
+
+                    break;
+                }
             }
 
-            Ok(())
+            Ok::<(), io::Error>(())
         });
 
-        let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
+        while let Ok(mut packet) = stream_recv.recv().await {
+            let packet = Packet::from_bytes(&mut packet)?;
 
-        loop {
-            let (len, addr) = sock_recv.recv_from(&mut buf).await?;
-            let data = buf[..len].to_vec();
-            let packet = Packet::with(secret, addr, data);
+            if packet.secret != secret {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Secret does not match",
+                ));
+            };
 
-            if let Err(e) = stream_send.send(packet.to_bytes()?).await {
-                return Err(io::Error::other(e.to_string()));
-            }
+            let target = packet.address.to_socket_addr().await?;
+            sock_send.send_to(&packet.data, target).await?;
         }
+
+        Ok(())
     }
 
     pub async fn listen(&self) -> io::Result<()> {
