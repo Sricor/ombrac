@@ -81,9 +81,9 @@ impl Server {
 
                         datagram_send.send(addr, data).await.unwrap();
 
-                        tokio::spawn(async move {
+                        let handle = tokio::spawn(async move {
                             while let Ok((addr, data)) = datagram_recv.recv().await {
-                                info!("UDP recv from remote {:?}", addr);
+                                info!("UDP recv from remote {:?} {:?}", addr, data.len());
                                 let addr = match addr {
                                     Address::Domain(domain, port) => {
                                         Socks5Address::Domain(domain, port)
@@ -113,8 +113,12 @@ impl Server {
                             };
                             let data = socks_packet.data;
 
-                            datagram_send.send(addr, data).await.unwrap();
+                            if datagram_send.send(addr, data).await.is_err() {
+                                break;
+                            }
                         }
+
+                        handle.abort();
                     }
                 };
             });
