@@ -1222,7 +1222,11 @@ name = "tests-integration"
 version = "0.3.2"
 dependencies = [
  "curl",
+ "ombrac-client",
+ "ombrac-server",
+ "ombrac-transport",
  "tests-support",
+ "tokio",
 ]
 
 [[package]]
@@ -1230,6 +1234,7 @@ name = "tests-support"
 version = "0.3.2"
 dependencies = [
  "rcgen",
+ "tokio",
 ]
 
 [[package]]

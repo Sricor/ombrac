@@ -88,10 +88,10 @@ impl Server {
                             };
                             let data = socks_packet.data;
 
-                            ombrac
-                                .udp_associate(stream_2.clone().as_ref(), addr, data)
-                                .await
-                                .unwrap();
+                            // ombrac
+                            //     .send_datagram(stream_2.clone().as_ref(), addr, data)
+                            //     .await
+                            //     .unwrap();
                         }
                     }
                 };
