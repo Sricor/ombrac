@@ -1,29 +1,26 @@
-
-
 #[cfg(test)]
 mod tests_transport_quic {
     use std::time::Duration;
 
     use ombrac_client::Client;
     use ombrac_server::Server;
-    use ombrac_transport::quic::{server::Builder as QuicServerBuilder, client::Builder as QuicClientBuilder};
+    use ombrac_transport::quic::{
+        client::Builder as QuicClientBuilder, server::Builder as QuicServerBuilder,
+    };
     use tests_support::net::{tcp::ResponseTcpServer, udp::ResponseUdpServer, *};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn test_transport_quic_tcp() {
         let secret = [0u8; 32];
-        let tcp_server_addr = find_available_local_tcp_addr();
         let server_addr = find_available_local_udp_addr();
 
-        tokio::spawn(async move {
-            let tcp_server = ResponseTcpServer::new(tcp_server_addr).await.unwrap();
-            tcp_server
-                .set_response(b"test_request".to_vec(), b"test_response".to_vec())
-                .await;
+        let tcp_server = ResponseTcpServer::new().await.unwrap();
+        tcp_server
+            .set_response(b"test_request".to_vec(), b"test_response".to_vec())
+            .await;
 
-            tcp_server.start().await.unwrap();
-        });
+        let tcp_server_handle = tcp_server.start().await.unwrap();
 
         tokio::spawn(async move {
             let server = QuicServerBuilder::new(server_addr.to_string())
@@ -31,10 +28,7 @@ mod tests_transport_quic {
                 .build()
                 .await
                 .unwrap();
-            Server::new(secret, server)
-                .listen()
-                .await
-                .unwrap();
+            Server::new(secret, server).listen().await.unwrap();
         });
 
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -49,7 +43,7 @@ mod tests_transport_quic {
         let mut stream = client.reliable().await.unwrap();
 
         client
-            .tcp_connect(&mut stream, tcp_server_addr)
+            .tcp_connect(&mut stream, tcp_server_handle.addr())
             .await
             .unwrap();
 
@@ -63,11 +57,10 @@ mod tests_transport_quic {
     }
 
     #[tokio::test]
-    async fn test_socks5_quic_udp() {
+    async fn test_transport_quic_udp() {
         let secret = [0u8; 32];
 
-        let udp_server_addr = find_available_local_udp_addr();
-        let udp_server = ResponseUdpServer::new(udp_server_addr);
+        let udp_server = ResponseUdpServer::new();
 
         udp_server
             .set_response(b"test_request".to_vec(), b"test_response".to_vec())
@@ -85,10 +78,7 @@ mod tests_transport_quic {
                 .await
                 .unwrap();
 
-            Server::new(secret, server)
-                .listen()
-                .await
-                .unwrap();
+            Server::new(secret, server).listen().await.unwrap();
         });
 
         tokio::time::sleep(Duration::from_millis(500)).await;

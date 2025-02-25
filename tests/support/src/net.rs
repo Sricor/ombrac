@@ -45,7 +45,6 @@ pub fn wait_for_tcp_connect(addr: &SocketAddr, retries: u32, wait_millis: u64) -
     false
 }
 
-
 pub mod http {
     use std::io::{Read, Write};
     use std::net::ToSocketAddrs;
@@ -81,13 +80,12 @@ pub mod http {
     }
 }
 
-
 pub mod tcp {
     use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::sync::Mutex;
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Mutex;
 
     pub struct ResponseTcpServer {
         responses: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -96,10 +94,10 @@ pub mod tcp {
     }
 
     impl ResponseTcpServer {
-        pub async fn new(addr: impl Into<SocketAddr>) -> io::Result<Self> {
+        pub async fn new() -> io::Result<Self> {
             Ok(Self {
                 responses: Arc::new(Mutex::new(HashMap::new())),
-                addr: addr.into(),
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 delay_ms: None,
             })
         }
@@ -186,9 +184,9 @@ pub mod tcp {
     }
 
     impl EchoTcpServer {
-        pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        pub fn new() -> Self {
             Self {
-                addr: addr.into(),
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             }
         }
 
@@ -258,14 +256,13 @@ pub mod tcp {
     #[cfg(test)]
     mod tests_response {
         use super::ResponseTcpServer;
-        use std::net::SocketAddr;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpStream;
 
         #[tokio::test]
         async fn test_response_tcp_server() {
-            let server = ResponseTcpServer::new("127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
-            
+            let server = ResponseTcpServer::new().await.unwrap();
+
             let input = b"hello";
             let response = b"world";
             server.set_response(input.to_vec(), response.to_vec()).await;
@@ -283,21 +280,17 @@ pub mod tcp {
 
             handle.abort();
         }
-
-
     }
-
 
     #[cfg(test)]
     mod tests_echo {
         use super::EchoTcpServer;
-        use std::net::SocketAddr;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpStream;
 
         #[tokio::test]
         async fn test_echo_tcp_server() {
-            let server = EchoTcpServer::new("127.0.0.1:0".parse::<SocketAddr>().unwrap());
+            let server = EchoTcpServer::new();
             let handle = server.start().await.unwrap();
             let server_addr = handle.addr();
 
@@ -315,7 +308,6 @@ pub mod tcp {
     }
 }
 
-
 pub mod udp {
     use std::{collections::HashMap, io, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -329,10 +321,10 @@ pub mod udp {
     }
 
     impl ResponseUdpServer {
-        pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        pub fn new() -> Self {
             Self {
                 responses: Arc::new(Mutex::new(HashMap::new())),
-                addr: addr.into(),
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 delay_ms: None,
                 buffer_size: 4096,
             }
@@ -412,9 +404,9 @@ pub mod udp {
     }
 
     impl EchoUdpServer {
-        pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        pub fn new() -> Self {
             Self {
-                addr: addr.into(),
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 buffer_size: 4096,
             }
         }
@@ -486,16 +478,14 @@ pub mod udp {
         }
     }
 
-
     #[cfg(test)]
     mod tests_response {
         use super::ResponseUdpServer;
-        use std::net::SocketAddr;
         use tokio::net::UdpSocket;
 
         #[tokio::test]
         async fn test_response_udp_server() {
-            let server = ResponseUdpServer::new("127.0.0.1:0".parse::<SocketAddr>().unwrap());
+            let server = ResponseUdpServer::new();
             let input = b"hello";
             let response = b"world";
             server.set_response(input.to_vec(), response.to_vec()).await;
@@ -516,14 +506,12 @@ pub mod udp {
 
     #[cfg(test)]
     mod tests_echo {
-        use std::net::SocketAddr;
-
         use super::EchoUdpServer;
         use tokio::net::UdpSocket;
 
         #[tokio::test]
         async fn test_echo_udp_server() {
-            let server = EchoUdpServer::new("127.0.0.1:0".parse::<SocketAddr>().unwrap());
+            let server = EchoUdpServer::new();
             let handle = server.start().await.unwrap();
             let server_addr = handle.addr();
 

@@ -49,7 +49,6 @@ impl<T: Transport> Client<T> {
     }
 }
 
-
 pub struct Datagram<U: Unreliable>(Secret, U);
 
 impl<U: Unreliable> Datagram<U> {
