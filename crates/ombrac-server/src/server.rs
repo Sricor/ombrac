@@ -47,7 +47,7 @@ impl<T: Transport> Server<T> {
         const DEFAULT_BUFFER_SIZE: usize = 2 * 1024;
 
         // TODO: ipv6?
-        let local: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let local: SocketAddr = "[::]:0".parse().unwrap();
         let socket = UdpSocket::bind(local).await?;
 
         let sock_send = Arc::new(socket);
@@ -55,7 +55,7 @@ impl<T: Transport> Server<T> {
         let stream_send = Arc::new(stream);
         let stream_recv = Arc::clone(&stream_send);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut buf = [0u8; DEFAULT_BUFFER_SIZE];
 
             loop {
@@ -86,6 +86,8 @@ impl<T: Transport> Server<T> {
             let target = packet.address.to_socket_addr().await?;
             sock_send.send_to(&packet.data, target).await?;
         }
+
+        handle.abort();
 
         Ok(())
     }

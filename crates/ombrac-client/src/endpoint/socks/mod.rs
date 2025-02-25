@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::{error::Error, io::Cursor};
 
 use ombrac::prelude::*;
-use ombrac_macros::{info, try_or_return};
+use ombrac_macros::{info, try_or_return, warn};
 use ombrac_transport::{Transport, Unreliable};
 use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
@@ -81,9 +81,9 @@ impl Server {
 
                         datagram_send.send(addr, data).await.unwrap();
 
-
                         tokio::spawn(async move {
                             while let Ok((addr, data)) = datagram_recv.recv().await {
+                                info!("UDP recv from remote {:?}", addr);
                                 let addr = match addr {
                                     Address::Domain(domain, port) => {
                                         Socks5Address::Domain(domain, port)
@@ -91,8 +91,8 @@ impl Server {
                                     Address::IPv4(addr) => Socks5Address::IPv4(addr),
                                     Address::IPv6(addr) => Socks5Address::IPv6(addr),
                                 };
-                                let data = UdpPacket::un_frag(addr.into(), data.into());
-                                info!("recv from remote, send to socks {:?}", data);
+                                let data = UdpPacket::un_frag(addr, data.into());
+                                // info!("recv from remote, send to socks");
                                 socks_1.send_to(&data.to_bytes(), client_socks_addr).await.unwrap();
                             }
                         });
@@ -104,7 +104,6 @@ impl Server {
                             let socks_packet =
                                 UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
 
-                                info!("recv from socks, send remote {:?}", socks_packet);
                             let addr = match socks_packet.address {
                                 Socks5Address::Domain(domain, port) => {
                                     Address::Domain(domain, port)
