@@ -61,7 +61,7 @@ impl Connection {
         tokio::spawn(async move {
             tokio::spawn(async move {
                 while let Ok(datagram) = datagram_to_send.recv().await {
-                    if let Err(_error) = conn.send_datagram_wait(datagram).await {
+                    if let Err(_error) = conn.send_datagram(datagram) {
                         error!("{_error}");
 
                         break;

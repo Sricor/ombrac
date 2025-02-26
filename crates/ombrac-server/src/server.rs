@@ -60,12 +60,11 @@ impl<T: Transport> Server<T> {
 
             loop {
                 let (len, addr) = sock_recv.recv_from(&mut buf).await?;
+
                 let data = buf[..len].to_vec();
                 let packet = Packet::with(secret, addr, data);
 
-                if let Err(_error) = stream_send.send(packet.to_bytes()?).await {
-                    error!("{_error}");
-
+                if stream_send.send(packet.to_bytes()?).await.is_err() {
                     break;
                 }
             }
