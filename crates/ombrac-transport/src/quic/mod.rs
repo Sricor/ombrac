@@ -76,8 +76,8 @@ impl Connection {
                             break;
                         }
                     }
-                    Err(e) => {
-                        error!("Failed to read datagram from connection: {}", e);
+                    Err(_error) => {
+                        error!("Failed to read datagram from connection: {}", _error);
                         break;
                     }
                 }

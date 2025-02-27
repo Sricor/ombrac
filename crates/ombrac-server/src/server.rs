@@ -87,8 +87,8 @@ impl<T: Transport> Server<T> {
                     sock_send.send_to(&packet.data, target).await?;
                 }
 
-                Err(e) => {
-                    error!("Failed to recv packet from connection: {}", e);
+                Err(_error) => {
+                    // error!("Failed to recv packet from connection: {}", _error);
 
                     break;
                 }
