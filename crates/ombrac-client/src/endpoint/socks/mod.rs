@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::{error::Error, io::Cursor};
 
 use ombrac::prelude::*;
-use ombrac_macros::{info, try_or_return, warn};
-use ombrac_transport::{Transport, Unreliable};
+use ombrac_macros::{info, try_or_return};
+use ombrac_transport::Transport;
 use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
 use socks_lib::{socks5::UdpPacket, Streamable};
@@ -68,13 +68,10 @@ impl Server {
 
                         let (len, client_socks_addr) = socks_2.recv_from(&mut buf).await.unwrap();
                         let data = buf[..len].to_vec();
-                        let socks_packet =
-                            UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
+                        let socks_packet = UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
 
                         let addr = match socks_packet.address {
-                            Socks5Address::Domain(domain, port) => {
-                                Address::Domain(domain, port)
-                            }
+                            Socks5Address::Domain(domain, port) => Address::Domain(domain, port),
                             Socks5Address::IPv4(addr) => Address::IPv4(addr),
                             Socks5Address::IPv6(addr) => Address::IPv6(addr),
                         };
@@ -94,19 +91,21 @@ impl Server {
                                 };
                                 let data = UdpPacket::un_frag(addr, data.into());
                                 // info!("recv from remote, send to socks");
-                                socks_1.send_to(&data.to_bytes(), client_socks_addr).await.unwrap();
+                                socks_1
+                                    .send_to(&data.to_bytes(), client_socks_addr)
+                                    .await
+                                    .unwrap();
                             }
                         });
 
                         let handle_socks = tokio::spawn(async move {
-
                             loop {
                                 // recv from socks
                                 let (len, _addr) = socks_2.recv_from(&mut buf).await.unwrap();
                                 let data = buf[..len].to_vec();
                                 let socks_packet =
                                     UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
-    
+
                                 let addr = match socks_packet.address {
                                     Socks5Address::Domain(domain, port) => {
                                         Address::Domain(domain, port)
@@ -115,11 +114,11 @@ impl Server {
                                     Socks5Address::IPv6(addr) => Address::IPv6(addr),
                                 };
                                 let data = socks_packet.data;
-    
+
                                 datagram_send.send(addr, data).await.unwrap();
                             }
                         });
-                        
+
                         loop {
                             if stream.read_u8().await.is_err() {
                                 break;

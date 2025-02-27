@@ -46,7 +46,6 @@ impl<T: Transport> Server<T> {
     async fn handle_udp_associate(stream: impl Unreliable, secret: Secret) -> io::Result<()> {
         const DEFAULT_BUFFER_SIZE: usize = 2 * 1024;
 
-        // TODO: ipv6?
         let local: SocketAddr = "[::]:0".parse().unwrap();
         let socket = UdpSocket::bind(local).await?;
 

@@ -40,12 +40,7 @@ mod tests_transport_quic {
             .unwrap();
         let client = Client::new(secret, client);
 
-        let mut stream = client.reliable().await.unwrap();
-
-        client
-            .tcp_connect(&mut stream, tcp_server_handle.addr())
-            .await
-            .unwrap();
+        let mut stream = client.tcp_connect(tcp_server_handle.addr()).await.unwrap();
 
         stream.write_all(b"test_request").await.unwrap();
         stream.flush().await.unwrap();

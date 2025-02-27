@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "quic")]
 pub mod quic;
 
-pub trait Transport: Send {
+pub trait Transport: Send + Sync + 'static {
     fn unreliable(&self) -> impl Future<Output = Result<impl Unreliable>> + Send;
     fn reliable(&self) -> impl Future<Output = Result<impl Reliable>> + Send;
 }
