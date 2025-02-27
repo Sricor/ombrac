@@ -71,18 +71,28 @@ impl<T: Transport> Server<T> {
             Ok::<(), io::Error>(())
         });
 
-        while let Ok(mut packet) = stream_recv.recv().await {
-            let packet = Packet::from_bytes(&mut packet)?;
+        loop {
+            match stream_recv.recv().await {
+                Ok(mut packet) => {
+                    let packet = Packet::from_bytes(&mut packet)?;
 
-            if packet.secret != secret {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Secret does not match",
-                ));
-            };
+                    if packet.secret != secret {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Secret does not match",
+                        ));
+                    };
+        
+                    let target = packet.address.to_socket_addr().await?;
+                    sock_send.send_to(&packet.data, target).await?;
+                }
 
-            let target = packet.address.to_socket_addr().await?;
-            sock_send.send_to(&packet.data, target).await?;
+                Err(e) => {
+                    error!("Failed to recv packet from connection: {}", e);
+
+                    break;
+                }
+            }
         }
 
         handle.abort();

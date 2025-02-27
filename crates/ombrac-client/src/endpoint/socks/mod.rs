@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::{error::Error, io::Cursor};
 
 use ombrac::prelude::*;
-use ombrac_macros::{info, try_or_return};
+use ombrac_macros::{error, info, try_or_return, warn};
 use ombrac_transport::Transport;
 use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
@@ -55,7 +55,7 @@ impl Server {
                         );
                     }
                     Request::UdpAssociate(mut stream, socket) => {
-                        info!("Udp Associate");
+                        
 
                         let unr = ombrac.udp_associate().await.unwrap();
 
@@ -67,6 +67,8 @@ impl Server {
                         let mut buf = [0u8; 2048];
 
                         let (len, client_socks_addr) = socks_2.recv_from(&mut buf).await.unwrap();
+                        info!("Udp Associate from {}, {}", client_socks_addr, len);
+
                         let data = buf[..len].to_vec();
                         let socks_packet = UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
 
@@ -81,7 +83,7 @@ impl Server {
 
                         let handle = tokio::spawn(async move {
                             while let Ok((addr, data)) = datagram_recv.recv().await {
-                                info!("UDP recv from remote {:?} {:?}", addr, data.len());
+                                // info!("UDP recv from remote {:?} {:?}", addr, data.len());
                                 let addr = match addr {
                                     Address::Domain(domain, port) => {
                                         Socks5Address::Domain(domain, port)
@@ -115,7 +117,11 @@ impl Server {
                                 };
                                 let data = socks_packet.data;
 
-                                datagram_send.send(addr, data).await.unwrap();
+                                if datagram_send.send(addr, data).await.is_err() {
+                                    error!("UDP Datagram connection close");
+
+                                    break;
+                                }
                             }
                         });
 
