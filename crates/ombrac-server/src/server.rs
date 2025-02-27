@@ -100,36 +100,39 @@ impl<T: Transport> Server<T> {
         Ok(())
     }
 
-    pub async fn listen(&self) -> io::Result<()> {
+    pub async fn listen(self) -> io::Result<()> {
         let secret = self.secret.clone();
 
-        loop {
-            tokio::select! {
-                result = self.transport.reliable() => {
-                    match result {
-                        Ok(stream) => {
-                            tokio::spawn(async move {
-                                if let Err(_error) = Self::handle_reliable(stream, secret).await {
-                                    error!("{_error}");
-                                }
-                            })
-                        },
-                        Err(err) => return Err(io::Error::other(err.to_string()))
-                    };
-                }
+        let transport = Arc::new(self.transport);
+        let unreliable_transport = transport.clone();
 
-                result = self.transport.unreliable() => {
-                    match result {
-                        Ok(stream) => {
-                            tokio::spawn(async move {
-                                if let Err(_error) = Self::handle_unreliable(stream, secret).await {
-                                    error!("{_error}");
-                                }
-                            })
-                        },
-                        Err(err) => return Err(io::Error::other(err.to_string()))
-                    };
-                }
+        tokio::spawn(async move {
+            match unreliable_transport.unreliable().await {
+                Ok(stream) => {
+                    tokio::spawn(async move {
+                        if let Err(_error) = Self::handle_unreliable(stream, secret).await {
+                            error!("{_error}");
+                        }
+                    });
+
+                    ()
+                },
+                Err(_error) => {error!("{}", _error); ()},
+            };
+
+            ()
+        });
+
+        loop {
+            match transport.reliable().await {
+                Ok(stream) => {
+                    tokio::spawn(async move {
+                        if let Err(_error) = Self::handle_reliable(stream, secret).await {
+                            error!("{_error}");
+                        }
+                    })
+                },
+                Err(err) => return Err(io::Error::other(err.to_string()))
             };
         }
     }
