@@ -5,12 +5,11 @@ use std::sync::Arc;
 use std::{error::Error, io::Cursor};
 
 use ombrac::prelude::*;
-use ombrac_macros::{error, info, try_or_return, warn};
+use ombrac_macros::{error, info, try_or_return};
 use ombrac_transport::Transport;
 use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
 use socks_lib::{socks5::UdpPacket, Streamable};
-use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use crate::Client;
@@ -54,9 +53,7 @@ impl Server {
                             addr, _bytes.0, _bytes.1
                         );
                     }
-                    Request::UdpAssociate(mut stream, socket) => {
-                        
-
+                    Request::UdpAssociate(_stream, socket) => {
                         let unr = ombrac.udp_associate().await.unwrap();
 
                         let socks_1 = Arc::new(socket);
@@ -100,38 +97,29 @@ impl Server {
                             }
                         });
 
-                        let handle_socks = tokio::spawn(async move {
-                            loop {
-                                // recv from socks
-                                let (len, _addr) = socks_2.recv_from(&mut buf).await.unwrap();
-                                let data = buf[..len].to_vec();
-                                let socks_packet =
-                                    UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
-
-                                let addr = match socks_packet.address {
-                                    Socks5Address::Domain(domain, port) => {
-                                        Address::Domain(domain, port)
-                                    }
-                                    Socks5Address::IPv4(addr) => Address::IPv4(addr),
-                                    Socks5Address::IPv6(addr) => Address::IPv6(addr),
-                                };
-                                let data = socks_packet.data;
-
-                                if datagram_send.send(addr, data).await.is_err() {
-                                    error!("UDP Datagram connection close");
-
-                                    break;
-                                }
-                            }
-                        });
-
                         loop {
-                            if stream.read_u8().await.is_err() {
+                            // recv from socks
+                            let (len, _addr) = socks_2.recv_from(&mut buf).await.unwrap();
+                            let data = buf[..len].to_vec();
+                            let socks_packet =
+                                UdpPacket::read(&mut Cursor::new(data)).await.unwrap();
+
+                            let addr = match socks_packet.address {
+                                Socks5Address::Domain(domain, port) => {
+                                    Address::Domain(domain, port)
+                                }
+                                Socks5Address::IPv4(addr) => Address::IPv4(addr),
+                                Socks5Address::IPv6(addr) => Address::IPv6(addr),
+                            };
+                            let data = socks_packet.data;
+
+                            if datagram_send.send(addr, data).await.is_err() {
+                                error!("UDP Datagram connection close");
+
                                 break;
                             }
                         }
 
-                        handle_socks.abort();
                         handle.abort();
                     }
                 };
