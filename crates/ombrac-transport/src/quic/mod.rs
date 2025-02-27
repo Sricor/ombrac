@@ -51,7 +51,7 @@ impl Unreliable for Datagram {
 
 impl Connection {
     fn spawn_datagram(conn: quinn::Connection) -> Datagram {
-        const DEFAULT_SIZE: usize = 64;
+        const DEFAULT_SIZE: usize = 1024;
 
         let conn_recv = conn.clone();
 
@@ -59,9 +59,9 @@ impl Connection {
         let (forwarder, receiver) = async_channel::bounded(DEFAULT_SIZE);
 
         tokio::spawn(async move {
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Ok(datagram) = datagram_to_send.recv().await {
-                    if let Err(_error) = conn.send_datagram(datagram) {
+                    if let Err(_error) = conn.send_datagram_wait(datagram).await {
                         error!("{_error}");
 
                         break;
@@ -69,11 +69,21 @@ impl Connection {
                 }
             });
 
-            while let Ok(datagram) = conn_recv.read_datagram().await {
-                if forwarder.send(datagram).await.is_err() {
-                    break;
+            loop {
+                match conn_recv.read_datagram().await {
+                    Ok(datagram) => {
+                        if forwarder.send(datagram).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to read datagram from connection: {}", e);
+                        break;
+                    }
                 }
             }
+
+            handle.abort();
         });
 
         Datagram(sender, receiver)
