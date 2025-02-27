@@ -186,11 +186,14 @@ impl Connection {
                         }
                     };
 
-                    let datagram = Self::spawn_datagram(connection.clone());
+                    let conn = connection.clone();
+                    tokio::spawn(async move {
+                        let datagram = Self::spawn_datagram(conn);
 
-                    if datagram_sender.send(datagram).await.is_err() {
-                        return;
-                    }
+                        if datagram_sender.send(datagram).await.is_err() {
+                            return;
+                        }
+                    });
 
                     while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
                         if sender.send(Stream(send_stream, recv_stream)).await.is_err() {

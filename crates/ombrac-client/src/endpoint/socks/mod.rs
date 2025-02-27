@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::{error::Error, io::Cursor};
 
 use ombrac::prelude::*;
-use ombrac_macros::{error, info, try_or_return};
+use ombrac_macros::{error, info, try_or_return, warn};
 use ombrac_transport::Transport;
 use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
@@ -80,7 +80,7 @@ impl Server {
 
                         let handle = tokio::spawn(async move {
                             while let Ok((addr, data)) = datagram_recv.recv().await {
-                                // info!("UDP recv from remote {:?} {:?}", addr, data.len());
+                                info!("UDP recv from remote {:?} {:?}", addr, data.len());
                                 let addr = match addr {
                                     Address::Domain(domain, port) => {
                                         Socks5Address::Domain(domain, port)
@@ -113,12 +113,14 @@ impl Server {
                             };
                             let data = socks_packet.data;
 
-                            if datagram_send.send(addr, data).await.is_err() {
-                                error!("UDP Datagram connection close");
+                            if let Err(_error) = datagram_send.send(addr, data).await {
+                                error!("UDP Datagram connection close: {}", _error);
 
                                 break;
                             }
                         }
+
+                        warn!("Udp Associate Close {}", client_socks_addr);
 
                         handle.abort();
                     }

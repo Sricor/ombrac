@@ -51,7 +51,7 @@ impl Unreliable for Datagram {
 
 impl Connection {
     fn spawn_datagram(conn: quinn::Connection) -> Datagram {
-        const DEFAULT_SIZE: usize = 1024;
+        const DEFAULT_SIZE: usize = 8;
 
         let conn_recv = conn.clone();
 
