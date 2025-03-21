@@ -4,7 +4,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::address::Address;
-use crate::{Secret, SECRET_LENGTH};
+use crate::{SECRET_LENGTH, Secret};
 
 pub struct Connect {
     pub secret: Secret,

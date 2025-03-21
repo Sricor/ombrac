@@ -8,8 +8,8 @@ const SECRET_LENGTH: usize = 32;
 pub type Secret = [u8; SECRET_LENGTH];
 
 pub mod prelude {
+    pub use super::Secret;
     pub use super::address::Address;
     pub use super::connect::Connect;
     pub use super::packet::Packet;
-    pub use super::Secret;
 }

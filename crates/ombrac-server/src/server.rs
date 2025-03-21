@@ -53,7 +53,7 @@ impl<T: Acceptor> Server<T> {
     async fn handle_udp_associate(conn: impl Unreliable, secret: Secret) -> io::Result<()> {
         use std::net::SocketAddr;
         use tokio::net::UdpSocket;
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         const DEFAULT_BUFFER_SIZE: usize = 2 * 1024;
         const RECV_TIMEOUT: Duration = Duration::from_secs(180);

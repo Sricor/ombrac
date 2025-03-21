@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use ombrac_server::Server;
-use ombrac_transport::quic::server::Builder;
 use ombrac_transport::quic::Connection;
+use ombrac_transport::quic::server::Builder;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

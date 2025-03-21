@@ -3,7 +3,7 @@ use std::io;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::address::Address;
-use crate::{Secret, SECRET_LENGTH};
+use crate::{SECRET_LENGTH, Secret};
 
 #[derive(Debug, Clone)]
 pub struct Packet {

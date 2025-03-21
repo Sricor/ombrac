@@ -9,9 +9,9 @@ use std::{error::Error, io::Cursor};
 use ombrac::prelude::*;
 use ombrac_macros::{error, info, try_or_return};
 use ombrac_transport::Initiator;
-use socks_lib::socks5::Address as Socks5Address;
 use socks_lib::ToBytes;
-use socks_lib::{socks5::UdpPacket, Streamable};
+use socks_lib::socks5::Address as Socks5Address;
+use socks_lib::{Streamable, socks5::UdpPacket};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 

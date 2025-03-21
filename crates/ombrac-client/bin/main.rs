@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
-use ombrac_client::endpoint::socks::Server as SocksServer;
 use ombrac_client::Client;
-use ombrac_transport::quic::client::Builder;
+use ombrac_client::endpoint::socks::Server as SocksServer;
 use ombrac_transport::quic::Connection;
+use ombrac_transport::quic::client::Builder;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
