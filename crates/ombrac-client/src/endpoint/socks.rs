@@ -2,7 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ombrac_macros::{error, info};
+use ombrac_macros::{debug, error, info};
 use ombrac_transport::Initiator;
 use socks_lib::v5::server::Server as SocksServer;
 use socks_lib::v5::{Address, Request, Response, Stream};
@@ -18,7 +18,7 @@ impl<T: Initiator> Server<T> {
     }
 
     pub async fn listen(&self) -> io::Result<()> {
-        let ombrac = self.1.clone();
+        let ombrac = Arc::clone(&self.1);
 
         info!("SOCKS server listening on {}", self.0.local_addr()?);
 
@@ -37,8 +37,10 @@ impl<T: Initiator> Server<T> {
                                 Self::handle_associate(ombrac, address, stream).await
                             }
                             _ => {
-                                let _ = stream.write_response(&Response::CommandNotSupported).await;
-                                Ok(())
+                                match stream.write_response(&Response::CommandNotSupported).await {
+                                    Ok(_) => Ok(()),
+                                    Err(e) => Err(e),
+                                }
                             }
                         };
 
@@ -50,7 +52,6 @@ impl<T: Initiator> Server<T> {
 
                 Err(_error) => {
                     error!("Failed to accept: {}", _error);
-
                     continue;
                 }
             }
@@ -64,7 +65,6 @@ impl<T: Initiator> Server<T> {
         mut stream: Stream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> io::Result<()> {
         use ombrac::address::Address as OmbracAddress;
-        use ombrac::io::util::copy_bidirectional;
 
         stream
             .write_response(&Response::Success(Address::unspecified()))
@@ -76,9 +76,11 @@ impl<T: Initiator> Server<T> {
             Address::IPv6(addr) => OmbracAddress::IPv6(addr),
         };
 
+        info!("Connect {}", addr);
+
         let mut outbound = ombrac.connect(addr).await?;
 
-        let swap = copy_bidirectional(&mut stream, &mut outbound).await?;
+        ombrac::io::util::copy_bidirectional(&mut stream, &mut outbound).await?;
 
         Ok(())
     }
@@ -96,6 +98,8 @@ impl<T: Initiator> Server<T> {
         use tokio::net::UdpSocket;
         use tokio::time::{Duration, timeout};
 
+        const DEFAULT_BUF_SIZE: usize = 2 * 1024;
+
         let idle_timeout = Duration::from_secs(10);
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         let addr = Address::from_socket_addr(socket.local_addr()?);
@@ -106,11 +110,11 @@ impl<T: Initiator> Server<T> {
         let outbound = ombrac.associate().await?;
 
         let socket_1 = Arc::new(socket);
-        let socket_2 = socket_1.clone();
+        let socket_2 = Arc::clone(&socket_1);
         let datagram_1 = Arc::new(outbound);
-        let datagram_2 = datagram_1.clone();
+        let datagram_2 = Arc::clone(&datagram_1);
 
-        let mut buf = [0u8; 2048];
+        let mut buf = [0u8; DEFAULT_BUF_SIZE];
 
         // Accpet first client
         let client_addr = {
@@ -145,10 +149,16 @@ impl<T: Initiator> Server<T> {
             client_addr
         };
 
-        let mut handle_1 = tokio::spawn(async move {
+        let handle_1 = tokio::spawn(async move {
             loop {
                 match timeout(idle_timeout, socket_1.recv_from(&mut buf)).await {
-                    Ok(Ok((n, _addr))) => {
+                    Ok(Ok((n, addr))) => {
+                        // Only accept packets from the first client
+                        if addr != client_addr {
+                            buf = [0u8; DEFAULT_BUF_SIZE];
+                            continue;
+                        }
+
                         let packet = UdpPacket::from_bytes(&mut &buf[..n]).map_err(|e| {
                             Error::new(
                                 ErrorKind::InvalidData,
@@ -164,6 +174,7 @@ impl<T: Initiator> Server<T> {
                             Address::IPv6(addr) => OmbracAddress::IPv6(addr),
                         };
 
+                        debug!("Associate send to {}, length: {}", addr, packet.data.len());
                         datagram_1.send(packet.data, addr).await?;
                     }
                     Ok(Err(e)) => return Err(e),
@@ -174,10 +185,12 @@ impl<T: Initiator> Server<T> {
             Ok(())
         });
 
-        let mut handle_2 = tokio::spawn(async move {
+        let handle_2 = tokio::spawn(async move {
             loop {
                 match timeout(idle_timeout, datagram_2.recv()).await {
                     Ok(Ok((data, addr))) => {
+                        debug!("Associate recv from {}, length: {}", addr, data.len());
+
                         let addr = match addr {
                             OmbracAddress::Domain(domian, port) => {
                                 Address::Domain(Domain::from_bytes(domian.to_bytes()), port)
@@ -198,10 +211,10 @@ impl<T: Initiator> Server<T> {
             Ok(())
         });
 
-        if tokio::try_join!(&mut handle_1, &mut handle_2).is_err() {
-            handle_1.abort();
-            handle_2.abort();
-        };
+        tokio::select! {
+            result = handle_1 => result?,
+            result = handle_2 => result?
+        }?;
 
         Ok(())
     }

@@ -192,6 +192,18 @@ impl From<SocketAddr> for Address {
     }
 }
 
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Domain(domain, port) => format!("Doamin({:?}:{})", domain.0, port),
+            Self::IPv4(addr) => format!("IPv4({})", addr),
+            Self::IPv6(addr) => format!("IPv6({})", addr),
+        };
+
+        write!(f, "{message}")
+    }
+}
+
 // ===== Domain =====
 #[derive(Debug, Clone, PartialEq)]
 pub struct Domain(Bytes);

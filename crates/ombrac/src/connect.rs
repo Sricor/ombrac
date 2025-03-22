@@ -53,7 +53,7 @@ impl Connect {
 
         let payload_len = buf.get_u16() as usize;
 
-        let mut secret = Secret::default();
+        let mut secret = [0u8; SECRET_LENGTH];
         buf.copy_to_slice(&mut secret);
 
         if buf.remaining() < payload_len {
