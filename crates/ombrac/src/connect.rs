@@ -39,8 +39,6 @@ impl Connect {
         buf.put_slice(&self.secret);
         buf.put_slice(&address);
 
-        eprintln!("{:?}", buf);
-        
         Ok(buf.freeze())
     }
 
@@ -76,7 +74,6 @@ impl Connect {
 
         let mut buf = vec![0u8; SECRET_LENGTH + payload_len as usize];
         reader.read_exact(&mut buf).await?;
-        eprintln!("{:?}", buf);
 
         let mut secret = [0u8; SECRET_LENGTH];
         secret.copy_from_slice(&buf[..SECRET_LENGTH]);
@@ -185,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn test_connect_from_async_read_with_domain() {
         let secret = [0u8; 32];
-        let address = Address::Domain(Domain::from("www.bing.com"), 443);
+        let address = Address::Domain(Domain::from("example.com"), 443);
 
         let connect = Connect::with(secret, address.clone());
 
