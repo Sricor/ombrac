@@ -24,8 +24,8 @@ impl<T: Initiator> Client<T> {
         use tokio::io::AsyncWriteExt;
 
         let mut stream = self.transport.open_bidirectional().await?;
-        let request = Connect::with(self.secret, addr).to_bytes()?;
 
+        let request = Connect::with(self.secret, addr).to_bytes()?;
         stream.write_all(&request).await?;
 
         Ok(stream)

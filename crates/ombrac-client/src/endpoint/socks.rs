@@ -71,7 +71,7 @@ impl<T: Initiator> Server<T> {
             Address::IPv4(addr) => OmbracAddress::IPv4(addr),
             Address::IPv6(addr) => OmbracAddress::IPv6(addr),
         };
-
+        
         let addr2 = addr.clone();
 
         let mut outbound = ombrac.connect(addr).await?;

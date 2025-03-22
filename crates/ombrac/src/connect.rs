@@ -39,6 +39,8 @@ impl Connect {
         buf.put_slice(&self.secret);
         buf.put_slice(&address);
 
+        eprintln!("{:?}", buf);
+        
         Ok(buf.freeze())
     }
 
@@ -70,18 +72,16 @@ impl Connect {
     }
 
     pub async fn from_async_read<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Self> {
-        let mut header = [0u8; 2 + SECRET_LENGTH];
-        reader.read_exact(&mut header).await?;
+        let payload_len = reader.read_u16().await?;
 
-        let payload_len = u16::from_be_bytes([header[0], header[1]]) as usize;
+        let mut buf = vec![0u8; SECRET_LENGTH + payload_len as usize];
+        reader.read_exact(&mut buf).await?;
+        eprintln!("{:?}", buf);
 
-        let mut address_bytes = vec![0u8; payload_len];
-        reader.read_exact(&mut address_bytes).await?;
+        let mut secret = [0u8; SECRET_LENGTH];
+        secret.copy_from_slice(&buf[..SECRET_LENGTH]);
 
-        let secret = Secret::try_from(&header[2..2 + SECRET_LENGTH])
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid secret length"))?;
-
-        let address = Address::from_bytes(&mut address_bytes.as_slice())?;
+        let address = Address::from_bytes(&mut &buf[SECRET_LENGTH..])?;
 
         Ok(Self { secret, address })
     }
@@ -95,6 +95,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     use crate::address::Domain;
+
     #[test]
     fn test_connect_serialization() {
         let secret = [0xAA; 32];
@@ -177,6 +178,22 @@ mod tests {
         let mut reader = &bytes[..];
         let parsed = Connect::from_async_read(&mut reader).await.unwrap();
 
+        assert_eq!(parsed.secret, secret);
+        assert_eq!(parsed.address, address);
+    }
+
+    #[tokio::test]
+    async fn test_connect_from_async_read_with_domain() {
+        let secret = [0u8; 32];
+        let address = Address::Domain(Domain::from("www.bing.com"), 443);
+
+        let connect = Connect::with(secret, address.clone());
+
+        let bytes = connect.to_bytes().unwrap();
+
+        let mut reader = &bytes[..];
+        let parsed = Connect::from_async_read(&mut reader).await.unwrap();
+        
         assert_eq!(parsed.secret, secret);
         assert_eq!(parsed.address, address);
     }
