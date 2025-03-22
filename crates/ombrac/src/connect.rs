@@ -69,6 +69,7 @@ impl Connect {
         Ok(Self { secret, address })
     }
 
+    #[inline]
     pub async fn from_async_read<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Self> {
         let payload_len = reader.read_u16().await?;
 
@@ -190,7 +191,7 @@ mod tests {
 
         let mut reader = &bytes[..];
         let parsed = Connect::from_async_read(&mut reader).await.unwrap();
-        
+
         assert_eq!(parsed.secret, secret);
         assert_eq!(parsed.address, address);
     }

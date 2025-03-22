@@ -22,42 +22,46 @@ impl<T: Initiator> Server<T> {
 
         info!("SOCKS server listening on {}", self.0.local_addr()?);
 
-        while let Ok((request, mut stream)) = self.0.accept().await {
-            let ombrac = ombrac.clone();
+        loop {
+            match self.0.accept().await {
+                Ok((request, mut stream)) => {
+                    let ombrac = ombrac.clone();
 
-            tokio::spawn(async move {
-                info!("SOCKS Accept {:?}", request);
+                    tokio::spawn(async move {
+                        let result = match request {
+                            Request::Connect(address) => {
+                                Self::handle_connect(ombrac, address, stream).await
+                            }
+                            #[cfg(feature = "datagram")]
+                            Request::Associate(address) => {
+                                Self::handle_associate(ombrac, address, stream).await
+                            }
+                            _ => {
+                                let _ = stream.write_response(&Response::CommandNotSupported).await;
+                                Ok(())
+                            }
+                        };
 
-                let result = match request {
-                    Request::Connect(addr) => {
-                        Self::handle_connect(addr, &ombrac, &mut stream).await
-                    }
-                    #[cfg(feature = "datagram")]
-                    Request::Associate(addr) => {
-                        Self::handle_associate(addr, &ombrac, &mut stream).await
-                    }
-
-                    _ => {
-                        let _ = stream.write_response(&Response::CommandNotSupported).await;
-
-                        Ok(())
-                    }
-                };
-
-                if let Err(_error) = result {
-                    error!("{}", _error);
+                        if let Err(_error) = result {
+                            error!("{}", _error);
+                        }
+                    });
                 }
-            });
-        }
 
-        Ok(())
+                Err(_error) => {
+                    error!("Failed to accept: {}", _error);
+
+                    continue;
+                }
+            }
+        }
     }
 
     #[inline]
     async fn handle_connect(
-        addr: Address,
-        ombrac: &Client<T>,
-        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
+        ombrac: Arc<Client<T>>,
+        address: Address,
+        mut stream: Stream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> io::Result<()> {
         use ombrac::address::Address as OmbracAddress;
         use ombrac::io::util::copy_bidirectional;
@@ -66,24 +70,15 @@ impl<T: Initiator> Server<T> {
             .write_response(&Response::Success(Address::unspecified()))
             .await?;
 
-        let addr = match addr {
+        let addr = match address {
             Address::Domain(domian, port) => OmbracAddress::Domain(domian.to_bytes().into(), port),
             Address::IPv4(addr) => OmbracAddress::IPv4(addr),
             Address::IPv6(addr) => OmbracAddress::IPv6(addr),
         };
-        
-        let addr2 = addr.clone();
 
         let mut outbound = ombrac.connect(addr).await?;
 
-        let swap = copy_bidirectional(stream, &mut outbound).await?;
-
-        info!(
-            "{:?} Send: {}, Receive: {}",
-            addr2.format_as_string(),
-            swap.0,
-            swap.1
-        );
+        let swap = copy_bidirectional(&mut stream, &mut outbound).await?;
 
         Ok(())
     }
@@ -91,9 +86,9 @@ impl<T: Initiator> Server<T> {
     #[cfg(feature = "datagram")]
     #[inline]
     async fn handle_associate(
-        _addr: Address,
-        ombrac: &Client<T>,
-        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
+        ombrac: Arc<Client<T>>,
+        _address: Address,
+        mut stream: Stream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> io::Result<()> {
         use ombrac::address::Address as OmbracAddress;
         use socks_lib::v5::{Domain, UdpPacket};
@@ -101,11 +96,12 @@ impl<T: Initiator> Server<T> {
         use tokio::net::UdpSocket;
         use tokio::time::{Duration, timeout};
 
-        let idle_timeout = Duration::from_secs(60);
+        let idle_timeout = Duration::from_secs(10);
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         let addr = Address::from_socket_addr(socket.local_addr()?);
 
         stream.write_response(&Response::Success(&addr)).await?;
+        drop(stream);
 
         let outbound = ombrac.associate().await?;
 
