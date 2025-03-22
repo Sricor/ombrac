@@ -109,7 +109,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .expect("QUIC client startup failed"),
     );
 
-    SocksServer::listen(args.socks, ombrac_client)
+    SocksServer::bind(args.socks, ombrac_client.into())
+        .await?
+        .listen()
         .await
         .expect("SOCKS server failed to start");
 

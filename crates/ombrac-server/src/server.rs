@@ -19,16 +19,16 @@ impl<T: Acceptor> Server<T> {
     }
 
     async fn handle_reliable(stream: impl Reliable, secret: Secret) -> io::Result<()> {
-        Self::handle_tcp_connect(stream, secret).await
+        Self::handle_connect(stream, secret).await
     }
 
     #[cfg(feature = "datagram")]
     async fn handle_unreliable(stream: impl Unreliable, secret: Secret) -> io::Result<()> {
-        Self::handle_udp_associate(stream, secret).await
+        Self::handle_associate(stream, secret).await
     }
 
     #[inline]
-    async fn handle_tcp_connect(mut stream: impl Reliable, secret: Secret) -> io::Result<()> {
+    async fn handle_connect(mut stream: impl Reliable, secret: Secret) -> io::Result<()> {
         use tokio::net::TcpStream;
 
         let request = Connect::from_async_read(&mut stream).await?;
@@ -50,7 +50,7 @@ impl<T: Acceptor> Server<T> {
 
     #[cfg(feature = "datagram")]
     #[inline]
-    async fn handle_udp_associate(conn: impl Unreliable, secret: Secret) -> io::Result<()> {
+    async fn handle_associate(conn: impl Unreliable, secret: Secret) -> io::Result<()> {
         use std::net::SocketAddr;
         use tokio::net::UdpSocket;
         use tokio::time::{Duration, timeout};
@@ -70,7 +70,7 @@ impl<T: Acceptor> Server<T> {
             loop {
                 let (len, addr) = sock_recv.recv_from(&mut buf).await?;
                 let data = bytes::Bytes::copy_from_slice(&buf[..len]);
-                let packet = Packet::with(secret, addr, data);
+                let packet = Associate::with(secret, addr, data);
                 if let Err(e) = conn_send.send(packet.to_bytes()?).await {
                     return Err(io::Error::other(e.to_string()));
                 }
@@ -88,7 +88,7 @@ impl<T: Acceptor> Server<T> {
 
                 match result {
                     Ok(mut packet) => {
-                        let packet = Packet::from_bytes(&mut packet)?;
+                        let packet = Associate::from_bytes(&mut packet)?;
                         if packet.secret != secret {
                             return Err(io::Error::new(
                                 io::ErrorKind::PermissionDenied,
