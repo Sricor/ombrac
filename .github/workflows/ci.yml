@@ -79,9 +79,9 @@ jobs:
             gcc-x86-64-linux-gnu \
             gcc-aarch64-linux-gnu
 
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            echo CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc >> $GITHUB_ENV
-          fi
+          # if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          #   echo CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc >> $GITHUB_ENV
+          # fi
 
       - name: Build
         run: |
