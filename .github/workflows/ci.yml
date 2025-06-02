@@ -28,7 +28,7 @@ jobs:
             target: aarch64-unknown-linux-musl
 
           - arch-name: aarch64-pc-windows-msvc
-            os: windows-11-arm
+            os: windows-latest
             target: aarch64-pc-windows-msvc
 
           - arch-name: x86_64-apple-darwin
@@ -65,7 +65,7 @@ jobs:
       - name: Install dependencies for Windows
         if: startsWith(matrix.os, 'windows')
         run: |
-          choco install llvm nasm
+          choco install nasm
           echo "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Install general dependencies for Ubuntu
