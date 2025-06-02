@@ -167,12 +167,14 @@ jobs:
 
   build-docker:
     strategy:
+      fail-fast: false
       matrix:
-        - docker-arch: amd64
-          os: ubuntu-latest
+        include:
+          - docker-arch: amd64
+            os: ubuntu-latest
 
-        - docker-arch: arm64
-          os: ubuntu-24.04-arm
+          - docker-arch: arm64
+            os: ubuntu-24.04-arm
 
     runs-on: ${{ matrix.os }}
     
