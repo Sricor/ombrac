@@ -197,17 +197,17 @@ jobs:
             type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_SERVER }},push=true
             type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CLIENT }},push=true
 
-      - name: Generate artifact attestation for ${{ env.IMAGE_NAME_SERVER }} (${{ matrix.docker-arch }})
+      - name: Generate artifact attestation for ${{ env.IMAGE_NAME_SERVER }}
         uses: actions/attest-build-provenance@main
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}:${{ matrix.docker-arch }}
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate artifact attestation for ${{ env.IMAGE_NAME_CLIENT }} (${{ matrix.docker-arch }})
+      - name: Generate artifact attestation for ${{ env.IMAGE_NAME_CLIENT }}
         uses: actions/attest-build-provenance@main
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CLIENT }}:${{ matrix.docker-arch }}
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CLIENT }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
