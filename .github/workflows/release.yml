@@ -125,16 +125,25 @@ jobs:
   build-and-push-docker-images:
     needs: release
 
-    strategy:
-      matrix:
-        image:
-          - ombrac-server
-          - ombrac-client
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
 
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [ombrac-server, ombrac-client] 
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}/${{ matrix.target }}
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@main
 
       - name: Set up Docker Buildx
@@ -143,23 +152,37 @@ jobs:
       - name: Log in to the Container registry
         uses: docker/login-action@master
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker images
+      - name: Extract metadata (tags, labels) for Docker image
         id: meta
         uses: docker/metadata-action@master
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/tags/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/heads/release') }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.target }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.licenses=Apache-2.0
 
-      - name: Build and release Docker images
+      - name: Build and push Docker image for ${{ matrix.target }}
+        id: push
         uses: docker/build-push-action@master
         with:
-          platforms: linux/amd64,linux/arm64/v8
-          target: ${{ matrix.image }}
-          tags: ${{ steps.meta.outputs.tags }}
+          context: .
+          file: ./Dockerfile
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
           push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
 
   publish:
