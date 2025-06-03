@@ -159,7 +159,6 @@ jobs:
           platforms: linux/amd64,linux/arm64/v8
           target: ${{ matrix.image }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
           push: true
 
 
