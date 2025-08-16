@@ -114,9 +114,9 @@ impl Builder {
         let server_config = self.build_server_config()?;
         let endpoint = Endpoint::server(server_config, self.listen)?;
 
-        let (stream_sender, stream_receiver) = async_channel::bounded(1024);
+        let (stream_sender, stream_receiver) = async_channel::unbounded();
         #[cfg(feature = "datagram")]
-        let (datagram_sender, datagram_receiver) = async_channel::bounded(1024);
+        let (datagram_sender, datagram_receiver) = async_channel::unbounded();
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
 
         tokio::spawn(run(
