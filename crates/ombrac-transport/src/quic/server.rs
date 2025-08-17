@@ -141,7 +141,7 @@ impl Builder {
                         tokio::spawn(async move {
                             let session = Session::with_server(conn);
 
-                            while let Some(datagram) = session.accept_bidirectional().await {
+                            while let Some(datagram) = session.accept_datagram().await {
                                 if datagram_sender.send(datagram).await.is_err() {
                                     break;
                                 }
@@ -232,73 +232,73 @@ impl Acceptor for QuicServer {
     }
 }
 
-async fn run(
-    endpoint: quinn::Endpoint,
-    stream_sender: async_channel::Sender<Stream>,
-    #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
-    mut shutdown_receiver: watch::Receiver<()>,
-) {
-    loop {
-        tokio::select! {
-            _ = shutdown_receiver.changed() => {
-                endpoint.close(0u32.into(), b"");
-                endpoint.wait_idle().await;
-                break;
-            }
+// async fn run(
+//     endpoint: quinn::Endpoint,
+//     stream_sender: async_channel::Sender<Stream>,
+//     #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
+//     mut shutdown_receiver: watch::Receiver<()>,
+// ) {
+//     loop {
+//         tokio::select! {
+//             _ = shutdown_receiver.changed() => {
+//                 endpoint.close(0u32.into(), b"");
+//                 endpoint.wait_idle().await;
+//                 break;
+//             }
 
-            maybe_conn = endpoint.accept() => {
-                match maybe_conn {
-                    Some(conn) => {
-                        tokio::spawn(handle_connection(
-                            conn,
-                            stream_sender.clone(),
-                            #[cfg(feature = "datagram")]
-                            datagram_sender.clone(),
-                        ));
-                    }
-                    None => {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
+//             maybe_conn = endpoint.accept() => {
+//                 match maybe_conn {
+//                     Some(conn) => {
+//                         tokio::spawn(handle_connection(
+//                             conn,
+//                             stream_sender.clone(),
+//                             #[cfg(feature = "datagram")]
+//                             datagram_sender.clone(),
+//                         ));
+//                     }
+//                     None => {
+//                         break;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
 
-async fn handle_connection(
-    conn: quinn::Incoming,
-    stream_sender: async_channel::Sender<Stream>,
-    #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
-) {
-    match conn.await {
-        Ok(connection) => {
-            let remote_addr = connection.remote_address();
-            debug!("QUIC Connection from {}", remote_addr);
+// async fn handle_connection(
+//     conn: quinn::Incoming,
+//     stream_sender: async_channel::Sender<Stream>,
+//     #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
+// ) {
+//     match conn.await {
+//         Ok(connection) => {
+//             let remote_addr = connection.remote_address();
+//             debug!("QUIC Connection from {}", remote_addr);
 
-            #[cfg(feature = "datagram")]
-            {
-                let session = Session::with_server(connection.clone());
-                tokio::spawn(async move {
-                    while let Some(datagram) = session.accept_datagram().await {
-                        if datagram_sender.send(datagram).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
+//             #[cfg(feature = "datagram")]
+//             {
+//                 let session = Session::with_server(connection.clone());
+//                 tokio::spawn(async move {
+//                     while let Some(datagram) = session.accept_datagram().await {
+//                         if datagram_sender.send(datagram).await.is_err() {
+//                             break;
+//                         }
+//                     }
+//                 });
+//             }
 
-            while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
-                if stream_sender
-                    .send(Stream(send_stream, recv_stream))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to accept connection: {}", e)
-        }
-    }
-}
+//             while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
+//                 if stream_sender
+//                     .send(Stream(send_stream, recv_stream))
+//                     .await
+//                     .is_err()
+//                 {
+//                     break;
+//                 }
+//             }
+//         }
+//         Err(e) => {
+//             error!("Failed to accept connection: {}", e)
+//         }
+//     }
+// }
