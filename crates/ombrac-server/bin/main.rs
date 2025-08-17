@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 mod server;
+#[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::server::Builder;
 
 #[derive(Parser, Debug)]
@@ -154,24 +155,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let secret = blake3::hash(args.secret.as_bytes());
-    let transport = quic_config_from_args(&args)
-        .build()
-        .await
-        .expect("QUIC Server failed to build");
 
-    let ombrac_server = server::Server::new(*secret.as_bytes(), transport);
+    #[cfg(feature = "transport-quic")]
+    {
+        let transport = quic_config_from_args(&args)
+            .build()
+            .await
+            .expect("QUIC Server failed to build");
 
-    #[cfg(feature = "tracing")]
-    tracing::info!("Server listening on {}", args.listen);
+        let ombrac_server = server::Server::new(*secret.as_bytes(), transport);
 
-    ombrac_server
-        .listen()
-        .await
-        .expect("Server failed to listen");
+        #[cfg(feature = "tracing")]
+        tracing::info!("Server listening on {}", args.listen);
+
+        #[cfg(feature = "transport-quic")]
+        ombrac_server
+            .listen()
+            .await
+            .expect("Server failed to listen");
+    }
 
     Ok(())
 }
 
+#[cfg(feature = "transport-quic")]
 fn quic_config_from_args(args: &Args) -> Builder {
     let mut builder = Builder::new(args.listen);
 
