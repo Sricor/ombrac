@@ -1,23 +1,11 @@
-use std::io;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-mod server;
-
 use clap::Parser;
-#[cfg(feature = "datagram")]
-use ombrac::server::datagram::UdpHandlerConfig;
-use ombrac::{
-    prelude::Connect,
-    server::{SecretValid, Server, Validator},
-};
-use ombrac_macros::{error, info};
-use ombrac_transport::Acceptor;
-#[cfg(feature = "transport-quic")]
-use ombrac_transport::quic::{Congestion, server::Builder};
-use tokio::net::TcpStream;
+mod server;
+use ombrac_transport::quic::server::Builder;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -71,17 +59,6 @@ struct Args {
     #[clap(long, help_heading = "Transport QUIC", action, verbatim_doc_comment)]
     zero_rtt: bool,
 
-    #[cfg(feature = "transport-quic")]
-    /// Congestion control algorithm to use (e.g. bbr, cubic, newreno)
-    #[clap(
-        long,
-        help_heading = "Transport QUIC",
-        value_name = "ALGORITHM",
-        default_value = "bbr",
-        verbatim_doc_comment
-    )]
-    congestion: Congestion,
-
     /// Initial congestion window size in bytes
     #[clap(
         long,
@@ -117,32 +94,10 @@ struct Args {
         long,
         help_heading = "Transport QUIC",
         value_name = "NUM",
-        default_value = "1000",
+        default_value = "100",
         verbatim_doc_comment
     )]
     max_streams: Option<u64>,
-
-    /// Maximum idle time for a UDP association (in milliseconds)
-    #[cfg(feature = "datagram")]
-    #[clap(
-        long,
-        help_heading = "Transport UDP",
-        value_name = "TIME",
-        default_value = "30000",
-        verbatim_doc_comment
-    )]
-    udp_idle_timeout: u64,
-
-    /// Buffer size for receiving UDP packets (in bytes)
-    #[cfg(feature = "datagram")]
-    #[clap(
-        long,
-        help_heading = "Transport UDP",
-        value_name = "BYTES",
-        default_value = "1500",
-        verbatim_doc_comment
-    )]
-    udp_buffer_size: usize,
 
     /// Logging level (e.g., INFO, WARN, ERROR)
     #[cfg(feature = "tracing")]
@@ -178,7 +133,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     #[cfg(feature = "tracing")]
@@ -198,129 +153,54 @@ async fn main() -> io::Result<()> {
         subscriber.with_writer(non_blocking).init()
     }
 
-    let validator = secret_validator_from_args(&args);
+    let secret = blake3::hash(args.secret.as_bytes());
+    let transport = quic_config_from_args(&args)
+        .build()
+        .await
+        .expect("QUIC Server failed to build");
 
-    #[cfg(feature = "datagram")]
-    let udp_config = Arc::new(UdpHandlerConfig {
-        idle_timeout: Duration::from_millis(args.udp_idle_timeout),
-        buffer_size: args.udp_buffer_size,
-    });
+    let ombrac_server = server::Server::new(*secret.as_bytes(), transport);
 
-    #[cfg(feature = "transport-quic")]
-    {
-        let transport = quic_server_from_args(&args).await?;
-        info!("Server listening on {}", args.listen);
-        server::Server::new(*blake3::hash(args.secret.as_bytes()).as_bytes(), transport)
-            .listen()
-            .await
-            .unwrap();
+    #[cfg(feature = "tracing")]
+    tracing::info!("Server listening on {}", args.listen);
 
-        // let transport = Arc::new(Server::new));
-        // run_server(
-        //     transport,
-        //     validator,
-        //     #[cfg(feature = "datagram")]
-        //     udp_config,
-        // ).await?;
-    }
+    ombrac_server
+        .listen()
+        .await
+        .expect("Server failed to listen");
 
     Ok(())
 }
 
-fn secret_validator_from_args(args: &Args) -> SecretValid {
-    let secret = *blake3::hash(args.secret.as_bytes()).as_bytes();
-    SecretValid(secret)
-}
+fn quic_config_from_args(args: &Args) -> Builder {
+    let mut builder = Builder::new(args.listen);
 
-#[cfg(feature = "transport-quic")]
-async fn quic_server_from_args(args: &Args) -> io::Result<impl Acceptor> {
-    let bind_addr = args.listen;
-    let mut builder = Builder::new(bind_addr);
+    if let Some(value) = &args.tls_cert {
+        builder = builder.with_tls_cert(value.clone())
+    }
 
-    if let Some(cert) = &args.tls_cert
-        && let Some(key) = &args.tls_key
-    {
-        builder.with_tls((cert.to_path_buf(), key.to_path_buf()));
+    if let Some(value) = &args.tls_key {
+        builder = builder.with_tls_key(value.clone())
+    }
+
+    if let Some(value) = args.cwnd_init {
+        builder = builder.with_congestion_initial_window(value);
     }
 
     if let Some(value) = args.idle_timeout {
-        builder.with_max_idle_timeout(Duration::from_millis(value))?;
+        builder = builder.with_max_idle_timeout(Duration::from_millis(value));
     }
 
     if let Some(value) = args.keep_alive {
-        builder.with_max_keep_alive_period(Duration::from_millis(value));
+        builder = builder.with_max_keep_alive_period(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_streams {
-        builder.with_max_open_bidirectional_streams(value)?;
+        builder = builder.with_max_open_bidirectional_streams(value);
     }
 
-    builder.with_enable_self_signed(args.insecure);
-    builder.with_enable_zero_rtt(args.zero_rtt);
-    builder.with_congestion(args.congestion, args.cwnd_init);
+    builder = builder.with_tls_skip(args.insecure);
+    builder = builder.with_enable_zero_rtt(args.zero_rtt);
 
-    Ok(builder.build().await?)
-}
-
-async fn run_server(
-    transport: Arc<Server<impl Acceptor>>,
-    validator: SecretValid,
-    #[cfg(feature = "datagram")] udp_config: Arc<UdpHandlerConfig>,
-) -> io::Result<()> {
-    let connect_handle = {
-        let transport = Arc::clone(&transport);
-        tokio::spawn(async move {
-            loop {
-                match transport.transport.accept_bidirectional().await {
-                    Ok(mut stream) => tokio::spawn(async move {
-                        let connect = Connect::from_async_read(&mut stream).await?;
-
-                        let target = connect.address.to_socket_addr().await?;
-                        validator
-                            .is_valid(connect.secret, Some(target), None)
-                            .await?;
-
-                        let mut tcp_stream = TcpStream::connect(target).await?;
-
-                        ombrac::io::util::copy_bidirectional(&mut stream, &mut tcp_stream).await
-                    }),
-
-                    Err(error) => return Err::<(), io::Error>(error),
-                };
-            }
-        })
-    };
-
-    #[cfg(feature = "datagram")]
-    let datagram_handle = {
-        let transport = Arc::clone(&transport);
-        tokio::spawn(async move {
-            loop {
-                let config = udp_config.clone();
-                match transport.accept_associate().await {
-                    Ok(datagram) => tokio::spawn(async move {
-                        if let Err(_error) =
-                            Server::handle_associate(&validator, datagram, config).await
-                        {
-                            error!("{_error}");
-                        }
-                    }),
-
-                    Err(error) => return Err::<(), io::Error>(error),
-                };
-            }
-        })
-    };
-
-    #[cfg(feature = "datagram")]
-    {
-        let (connect, datagram) = tokio::join!(connect_handle, datagram_handle);
-        connect??;
-        datagram??
-    }
-
-    #[cfg(not(feature = "datagram"))]
-    connect_handle.await??;
-
-    Ok(())
+    builder
 }
