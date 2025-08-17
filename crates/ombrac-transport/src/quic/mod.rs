@@ -1,3 +1,8 @@
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::path::Path;
+use std::str::FromStr;
+use std::{fs, io};
+
 #[cfg(feature = "datagram")]
 mod datagram;
 mod error;
@@ -5,19 +10,6 @@ mod stream;
 
 pub mod client;
 pub mod server;
-
-use std::path::Path;
-use std::str::FromStr;
-use std::{fs, io};
-
-use async_channel::Receiver;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::task::JoinHandle;
-
-use crate::Acceptor;
-#[cfg(feature = "datagram")]
-use crate::quic::datagram::Datagram;
-use crate::quic::stream::Stream;
 
 type Result<T> = std::result::Result<T, error::Error>;
 
@@ -61,28 +53,3 @@ fn load_private_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
     };
     Ok(key)
 }
-
-pub struct Connection {
-    handle: JoinHandle<()>,
-    #[cfg(feature = "datagram")]
-    datagram: Receiver<Datagram>,
-    stream: Receiver<Stream>,
-}
-
-impl Acceptor for Connection {
-    async fn accept_bidirectional(&self) -> io::Result<impl crate::Reliable> {
-        self.stream
-            .recv()
-            .await
-            .map_err(|e| io::Error::other(e.to_string()))
-    }
-
-    #[cfg(feature = "datagram")]
-    async fn accept_datagram(&self) -> io::Result<impl crate::Unreliable> {
-        self.datagram
-            .recv()
-            .await
-            .map_err(|e| io::Error::other(e.to_string()))
-    }
-}
-

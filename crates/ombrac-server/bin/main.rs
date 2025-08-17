@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 mod server;
 #[cfg(feature = "transport-quic")]
-use ombrac_transport::quic::server::Builder;
+use ombrac_transport::quic::{Congestion, server::Builder};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -60,6 +60,17 @@ struct Args {
     #[clap(long, help_heading = "Transport QUIC", action, verbatim_doc_comment)]
     zero_rtt: bool,
 
+    #[cfg(feature = "transport-quic")]
+    /// Congestion control algorithm to use (e.g. bbr, cubic, newreno)
+    #[clap(
+        long,
+        help_heading = "Transport QUIC",
+        value_name = "ALGORITHM",
+        default_value = "bbr",
+        verbatim_doc_comment
+    )]
+    congestion: Congestion,
+
     /// Initial congestion window size in bytes
     #[clap(
         long,
@@ -100,6 +111,28 @@ struct Args {
     )]
     max_streams: Option<u64>,
 
+    /// Maximum idle time for a UDP association (in milliseconds)
+    #[cfg(feature = "datagram")]
+    #[clap(
+        long,
+        help_heading = "Transport UDP",
+        value_name = "TIME",
+        default_value = "30000",
+        verbatim_doc_comment
+    )]
+    udp_idle_timeout: u64,
+
+    /// Buffer size for receiving UDP packets (in bytes)
+    #[cfg(feature = "datagram")]
+    #[clap(
+        long,
+        help_heading = "Transport UDP",
+        value_name = "BYTES",
+        default_value = "1500",
+        verbatim_doc_comment
+    )]
+    udp_buffer_size: usize,
+
     /// Logging level (e.g., INFO, WARN, ERROR)
     #[cfg(feature = "tracing")]
     #[clap(
@@ -134,7 +167,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> io::Result<()> {
     let args = Args::parse();
 
     #[cfg(feature = "tracing")]
@@ -155,53 +188,54 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let secret = blake3::hash(args.secret.as_bytes());
-    let transport = quic_config_from_args(&args)
-        .build()
-        .await
-        .expect("QUIC Server failed to build");
 
-    let ombrac_server = server::Server::new(*secret.as_bytes(), transport);
+    #[cfg(feature = "transport-quic")]
+    {
+        let transport = quic_config_from_args(&args)?
+            .build()
+            .await
+            .expect("QUIC Server failed to build");
 
-    #[cfg(feature = "tracing")]
-    tracing::info!("Server listening on {}", args.listen);
+        let ombrac_server = server::Server::new(*secret.as_bytes(), transport);
 
-    ombrac_server
-        .listen()
-        .await
-        .expect("Server failed to listen");
+        #[cfg(feature = "tracing")]
+        tracing::info!("Server listening on {}", args.listen);
+
+        #[cfg(feature = "transport-quic")]
+        ombrac_server
+            .listen()
+            .await
+            .expect("Server failed to listen");
+    }
 
     Ok(())
 }
 
-fn quic_config_from_args(args: &Args) -> Builder {
+#[cfg(feature = "transport-quic")]
+fn quic_config_from_args(args: &Args) -> io::Result<Builder> {
     let mut builder = Builder::new(args.listen);
 
-    if let Some(value) = &args.tls_cert {
-        builder = builder.with_tls_cert(value.clone())
-    }
-
-    if let Some(value) = &args.tls_key {
-        builder = builder.with_tls_key(value.clone())
-    }
-
-    if let Some(value) = args.cwnd_init {
-        builder = builder.with_congestion_initial_window(value);
+    if let Some(cert) = &args.tls_cert
+        && let Some(key) = &args.tls_key
+    {
+        builder.with_tls((cert.to_path_buf(), key.to_path_buf()));
     }
 
     if let Some(value) = args.idle_timeout {
-        builder = builder.with_max_idle_timeout(Duration::from_millis(value));
+        builder.with_max_idle_timeout(Duration::from_millis(value))?;
     }
 
     if let Some(value) = args.keep_alive {
-        builder = builder.with_max_keep_alive_period(Duration::from_millis(value));
+        builder.with_max_keep_alive_period(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_streams {
-        builder = builder.with_max_open_bidirectional_streams(value);
+        builder.with_max_open_bidirectional_streams(value)?;
     }
 
-    builder = builder.with_tls_skip(args.insecure);
-    builder = builder.with_enable_zero_rtt(args.zero_rtt);
+    builder.with_enable_self_signed(args.insecure);
+    builder.with_enable_zero_rtt(args.zero_rtt);
+    builder.with_congestion(args.congestion, args.cwnd_init);
 
-    builder
+    Ok(builder)
 }
