@@ -205,7 +205,6 @@ async fn run(
 ) {
     loop {
         tokio::select! {
-            biased;
             _ = shutdown_receiver.changed() => {
                 endpoint.close(0u32.into(), b"");
                 endpoint.wait_idle().await;
@@ -231,51 +230,6 @@ async fn run(
     }
 }
 
-macro_rules! select_loop {
-    ($connection:expr, $stream_sender:expr, $remote_addr:expr) => {
-        loop {
-            match $connection.accept_bi().await {
-                Ok((send, recv)) => {
-                    let stream = Stream(send, recv);
-                    if $stream_sender.send(stream).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_e) => break,
-            }
-        }
-    };
-
-    ($connection:expr, $stream_sender:expr, $datagram_sender:expr, $session:expr, $remote_addr:expr) => {
-        loop {
-            tokio::select! {
-                stream_result = async {
-                    match $connection.accept_bi().await {
-                        Ok((send, recv)) => Ok(Stream(send, recv)),
-                        Err(e) => Err(e),
-                    }
-                } => match stream_result {
-                    Ok(stream) => {
-                        if $stream_sender.send(stream).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_e) => break
-                },
-
-                datagram = $session.accept_datagram() => match datagram {
-                    Some(value) => {
-                        if $datagram_sender.send(value).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => break
-                },
-            }
-        }
-    };
-}
-
 async fn handle_connection(
     conn: quinn::Incoming,
     stream_sender: async_channel::Sender<Stream>,
@@ -284,23 +238,24 @@ async fn handle_connection(
     match conn.await {
         Ok(connection) => {
             let remote_addr = connection.remote_address();
-            info!("New connection from: {}", remote_addr);
+            info!("Connection from {}", remote_addr);
 
             #[cfg(feature = "datagram")]
             {
                 let session = Session::with_server(connection.clone());
-                select_loop!(
-                    connection,
-                    stream_sender,
-                    datagram_sender,
-                    session,
-                    remote_addr
-                );
+                tokio::spawn(async move {
+                    while let Some(datagram) = session.accept_datagram().await {
+                        if datagram_sender.send(datagram).await.is_err() {
+                            break;
+                        }
+                    }
+                });
             }
 
-            #[cfg(not(feature = "datagram"))]
-            {
-                select_loop!(connection, stream_sender, remote_addr);
+            while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
+                if stream_sender.send(Stream(send_stream, recv_stream)).await.is_err() {
+                    break;
+                }
             }
         }
         Err(e) => {
