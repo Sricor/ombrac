@@ -5,173 +5,149 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_channel::Receiver;
-use quinn::IdleTimeout;
+use quinn::crypto::rustls::QuicServerConfig;
+use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::task::JoinHandle;
 
+use crate::Acceptor;
 #[cfg(feature = "datagram")]
 use crate::quic::datagram::Datagram;
-use crate::Acceptor;
 
-use super::{Result, error::Error, stream::Stream};
+use super::{Congestion, Result, error::Error, stream::Stream};
 
 pub struct Builder {
     listen: SocketAddr,
-
-    tls_key: Option<PathBuf>,
-    tls_cert: Option<PathBuf>,
-    tls_skip: bool,
-
     enable_zero_rtt: bool,
-    congestion_initial_window: Option<u64>,
-
-    max_idle_timeout: Option<Duration>,
-    max_keep_alive_period: Option<Duration>,
-    max_open_bidirectional_streams: Option<u64>,
+    enable_self_signed: bool,
+    tls_paths: Option<(PathBuf, PathBuf)>,
+    transport_config: TransportConfig,
 }
 
 impl Builder {
-    pub fn new<A>(addr: A) -> Self
-    where
-        A: Into<SocketAddr>,
-    {
-        Builder {
-            listen: addr.into(),
-            tls_cert: None,
-            tls_key: None,
-            tls_skip: false,
+    pub fn new(listen: SocketAddr) -> Self {
+        Self {
+            listen,
+            tls_paths: None,
             enable_zero_rtt: false,
-            congestion_initial_window: None,
-            max_idle_timeout: None,
-            max_keep_alive_period: None,
-            max_open_bidirectional_streams: None,
+            enable_self_signed: false,
+            transport_config: TransportConfig::default(),
         }
     }
 
-    pub fn with_tls_cert(mut self, value: PathBuf) -> Self {
-        self.tls_cert = Some(value);
+    pub fn with_tls(&mut self, paths: (PathBuf, PathBuf)) -> &mut Self {
+        self.tls_paths = Some(paths);
         self
     }
 
-    pub fn with_tls_key(mut self, value: PathBuf) -> Self {
-        self.tls_key = Some(value);
-        self
-    }
-
-    pub fn with_tls_skip(mut self, value: bool) -> Self {
-        self.tls_skip = value;
-        self
-    }
-
-    pub fn with_enable_zero_rtt(mut self, value: bool) -> Self {
+    pub fn with_enable_zero_rtt(&mut self, value: bool) -> &mut Self {
         self.enable_zero_rtt = value;
         self
     }
 
-    pub fn with_congestion_initial_window(mut self, value: u64) -> Self {
-        self.congestion_initial_window = Some(value);
+    pub fn with_enable_self_signed(&mut self, value: bool) -> &mut Self {
+        self.enable_self_signed = value;
         self
     }
 
-    pub fn with_max_idle_timeout(mut self, value: Duration) -> Self {
-        self.max_idle_timeout = Some(value);
+    pub fn with_congestion(
+        &mut self,
+        congestion: Congestion,
+        initial_window: Option<u64>,
+    ) -> &mut Self {
+        use quinn::congestion;
+
+        let congestion: Arc<dyn congestion::ControllerFactory + Send + Sync + 'static> =
+            match congestion {
+                Congestion::Bbr => {
+                    let mut config = congestion::BbrConfig::default();
+                    if let Some(value) = initial_window {
+                        config.initial_window(value);
+                    }
+                    Arc::new(config)
+                }
+                Congestion::Cubic => {
+                    let mut config = congestion::CubicConfig::default();
+                    if let Some(value) = initial_window {
+                        config.initial_window(value);
+                    }
+                    Arc::new(config)
+                }
+                Congestion::NewReno => {
+                    let mut config = congestion::NewRenoConfig::default();
+                    if let Some(value) = initial_window {
+                        config.initial_window(value);
+                    }
+                    Arc::new(config)
+                }
+            };
+
+        self.transport_config
+            .congestion_controller_factory(congestion);
         self
     }
 
-    pub fn with_max_keep_alive_period(mut self, value: Duration) -> Self {
-        self.max_keep_alive_period = Some(value);
+    pub fn with_max_idle_timeout(&mut self, value: Duration) -> Result<&mut Self> {
+        use quinn::IdleTimeout;
+        self.transport_config
+            .max_idle_timeout(Some(IdleTimeout::try_from(value)?));
+        Ok(self)
+    }
+
+    pub fn with_max_keep_alive_period(&mut self, value: Duration) -> &mut Self {
+        self.transport_config.keep_alive_interval(Some(value));
         self
     }
 
-    pub fn with_max_open_bidirectional_streams(mut self, value: u64) -> Self {
-        self.max_open_bidirectional_streams = Some(value);
-        self
+    pub fn with_max_open_bidirectional_streams(&mut self, value: u64) -> Result<&mut Self> {
+        self.transport_config
+            .max_concurrent_bidi_streams(VarInt::try_from(value)?);
+        Ok(self)
     }
 
     pub async fn build(self) -> Result<QuicServer> {
-        QuicServer::with_server(self).await
+        let server_config = self.build_server_config()?;
+
+        QuicServer::with_server(Endpoint::server(server_config, self.listen)?).await
+    }
+
+    fn build_server_config(&self) -> Result<ServerConfig> {
+        let (certs, key) = if self.enable_self_signed {
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+            let key = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into();
+            let certs = vec![CertificateDer::from(cert.cert)];
+            (certs, key)
+        } else {
+            let (cert, key) = self
+                .tls_paths
+                .as_ref()
+                .ok_or(Error::ServerMissingCertificate)?;
+            let certs = super::load_certificates(cert)?;
+            let key = super::load_private_key(key)?;
+            (certs, key)
+        };
+
+        let mut server_crypto = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
+
+        server_crypto.alpn_protocols = vec![b"h3".to_vec()];
+
+        // Zero RTT
+        if self.enable_zero_rtt {
+            server_crypto.send_half_rtt_data = true;
+            server_crypto.max_early_data_size = u32::MAX;
+        }
+
+        let server_config =
+            ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_crypto)?));
+
+        Ok(server_config)
     }
 }
 
 impl QuicServer {
-    async fn with_server(config: Builder) -> Result<Self> {
-        let tls_config = {
-            use quinn::crypto::rustls::QuicServerConfig;
-            use rustls::ServerConfig;
-            use rustls::pki_types::CertificateDer;
-            use rustls::pki_types::PrivatePkcs8KeyDer;
-
-            let (cert, key) = if config.tls_skip {
-                let signed = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-                let cert = vec![CertificateDer::from(signed.cert)];
-                let key = PrivatePkcs8KeyDer::from(signed.key_pair.serialize_der()).into();
-                (cert, key)
-            } else {
-                let (cert, key) = match (config.tls_cert, config.tls_key) {
-                    (Some(cert_path), Some(key_path)) => {
-                        let cert = super::load_certificates(&cert_path)?;
-                        let key = super::load_private_key(&key_path)?;
-                        (cert, key)
-                    }
-                    (None, _) => {
-                        return Err(Error::ServerMissingCertificate);
-                    }
-                    (_, None) => {
-                        return Err(Error::ServerMissingCertificate);
-                    }
-                };
-                (cert, key)
-            };
-
-            let mut tls_config = ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(cert, key)?;
-
-            tls_config.alpn_protocols = [b"h3"].iter().map(|&x| x.into()).collect();
-
-            if config.enable_zero_rtt {
-                tls_config.send_half_rtt_data = true;
-                tls_config.max_early_data_size = u32::MAX;
-            }
-
-            QuicServerConfig::try_from(tls_config)?
-        };
-
-        let server_config = {
-            use quinn::{ServerConfig, TransportConfig, VarInt, congestion};
-
-            let mut transport = TransportConfig::default();
-            let mut congestion = congestion::BbrConfig::default();
-
-            if let Some(value) = config.congestion_initial_window {
-                congestion.initial_window(value);
-            }
-
-            if let Some(value) = config.max_keep_alive_period {
-                transport.keep_alive_interval(Some(value));
-            }
-
-            if let Some(value) = config.max_idle_timeout {
-                transport.max_idle_timeout(Some(IdleTimeout::try_from(value)?));
-            }
-
-            if let Some(value) = config.max_open_bidirectional_streams {
-                transport.max_concurrent_bidi_streams(VarInt::try_from(value)?);
-            }
-
-            transport.congestion_controller_factory(Arc::new(congestion));
-
-            let mut config = ServerConfig::with_crypto(Arc::new(tls_config));
-            config.transport_config(Arc::new(transport));
-
-            config
-        };
-
-        let endpoint = {
-            use quinn::Endpoint;
-
-            Endpoint::server(server_config, config.listen)?
-        };
-
+    async fn with_server(endpoint: Endpoint) -> Result<Self> {
         let (sender, receiver) = async_channel::unbounded();
 
         #[cfg(feature = "datagram")]
@@ -233,17 +209,11 @@ pub struct QuicServer {
 
 impl Acceptor for QuicServer {
     async fn accept_bidirectional(&self) -> io::Result<impl crate::Reliable> {
-        self.stream
-            .recv()
-            .await
-            .map_err(|e| io::Error::other(e.to_string()))
+        self.stream.recv().await.map_err(io::Error::other)
     }
 
     #[cfg(feature = "datagram")]
     async fn accept_datagram(&self) -> io::Result<impl crate::Unreliable> {
-        self.datagram
-            .recv()
-            .await
-            .map_err(|e| io::Error::other(e.to_string()))
+        self.datagram.recv().await.map_err(io::Error::other)
     }
 }

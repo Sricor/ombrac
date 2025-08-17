@@ -1,4 +1,6 @@
 use std::error::Error;
+#[cfg(feature = "transport-quic")]
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -6,7 +8,7 @@ use std::time::Duration;
 use clap::Parser;
 mod server;
 #[cfg(feature = "transport-quic")]
-use ombrac_transport::quic::{server::Builder, Congestion};
+use ombrac_transport::quic::{Congestion, server::Builder};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -191,7 +193,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     #[cfg(feature = "transport-quic")]
     {
-        let transport = quic_config_from_args(&args)
+        let transport = quic_config_from_args(&args)?
             .build()
             .await
             .expect("QUIC Server failed to build");
@@ -212,35 +214,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(feature = "transport-quic")]
-fn quic_config_from_args(args: &Args) -> Builder {
-    let mut builder = Builder::new(args.listen);
+fn quic_config_from_args(args: &Args) -> io::Result<Builder> {
+    let bind_addr = args.listen;
+    let mut builder = Builder::new(bind_addr);
 
-    if let Some(value) = &args.tls_cert {
-        builder = builder.with_tls_cert(value.clone())
-    }
-
-    if let Some(value) = &args.tls_key {
-        builder = builder.with_tls_key(value.clone())
-    }
-
-    if let Some(value) = args.cwnd_init {
-        builder = builder.with_congestion_initial_window(value);
+    if let Some(cert) = &args.tls_cert
+        && let Some(key) = &args.tls_key
+    {
+        builder.with_tls((cert.to_path_buf(), key.to_path_buf()));
     }
 
     if let Some(value) = args.idle_timeout {
-        builder = builder.with_max_idle_timeout(Duration::from_millis(value));
+        builder.with_max_idle_timeout(Duration::from_millis(value))?;
     }
 
     if let Some(value) = args.keep_alive {
-        builder = builder.with_max_keep_alive_period(Duration::from_millis(value));
+        builder.with_max_keep_alive_period(Duration::from_millis(value));
     }
 
     if let Some(value) = args.max_streams {
-        builder = builder.with_max_open_bidirectional_streams(value);
+        builder.with_max_open_bidirectional_streams(value)?;
     }
 
-    builder = builder.with_tls_skip(args.insecure);
-    builder = builder.with_enable_zero_rtt(args.zero_rtt);
+    builder.with_enable_self_signed(args.insecure);
+    builder.with_enable_zero_rtt(args.zero_rtt);
+    builder.with_congestion(args.congestion, args.cwnd_init);
 
-    builder
+    Ok(builder)
 }
