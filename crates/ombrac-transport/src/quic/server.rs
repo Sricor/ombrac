@@ -9,6 +9,7 @@ use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 #[cfg(feature = "datagram")]
 use crate::Unreliable;
@@ -119,15 +120,46 @@ impl Builder {
         let (datagram_sender, datagram_receiver) = async_channel::unbounded();
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
 
-        tokio::spawn(run(
-            endpoint,
-            stream_sender,
-            #[cfg(feature = "datagram")]
-            datagram_sender,
-            shutdown_receiver,
-        ));
+        let handle = tokio::spawn(async move {
+            while let Some(connecting) = endpoint.accept().await {
+                let sender = stream_sender.clone();
+
+                #[cfg(feature = "datagram")]
+                let datagram_sender = datagram_sender.clone();
+
+                tokio::spawn(async move {
+                    let connection = match connecting.await {
+                        Ok(conn) => conn,
+                        Err(_) => return,
+                    };
+
+                    #[cfg(feature = "datagram")]
+                    {
+                        use crate::quic::datagram::Session;
+
+                        let conn = connection.clone();
+                        tokio::spawn(async move {
+                            let session = Session::with_server(conn);
+
+                            while let Some(datagram) = session.accept_bidirectional().await {
+                                if datagram_sender.send(datagram).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+
+                    while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
+                        if sender.send(Stream(send_stream, recv_stream)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
 
         Ok(QuicServer {
+            handle,
             stream_receiver,
             #[cfg(feature = "datagram")]
             datagram_receiver,
@@ -171,6 +203,7 @@ impl Builder {
 }
 
 pub struct QuicServer {
+    handle: JoinHandle<()>,
     stream_receiver: async_channel::Receiver<Stream>,
     #[cfg(feature = "datagram")]
     datagram_receiver: async_channel::Receiver<Datagram>,
