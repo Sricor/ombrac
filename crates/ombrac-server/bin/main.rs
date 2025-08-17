@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let secret = blake3::hash(args.secret.as_bytes());
-    
+
     #[cfg(feature = "transport-quic")]
     {
         let transport = quic_config_from_args(&args)
@@ -174,9 +174,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await
             .expect("Server failed to listen");
 
-        Ok(())
+        
     }
 
+    Ok(())
 }
 
 #[cfg(feature = "transport-quic")]
