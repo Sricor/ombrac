@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 mod server;
 #[cfg(feature = "transport-quic")]
-use ombrac_transport::quic::server::Builder;
+use ombrac_transport::quic::{server::Builder, Congestion};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -60,6 +60,17 @@ struct Args {
     #[clap(long, help_heading = "Transport QUIC", action, verbatim_doc_comment)]
     zero_rtt: bool,
 
+    #[cfg(feature = "transport-quic")]
+    /// Congestion control algorithm to use (e.g. bbr, cubic, newreno)
+    #[clap(
+        long,
+        help_heading = "Transport QUIC",
+        value_name = "ALGORITHM",
+        default_value = "bbr",
+        verbatim_doc_comment
+    )]
+    congestion: Congestion,
+
     /// Initial congestion window size in bytes
     #[clap(
         long,
@@ -99,6 +110,28 @@ struct Args {
         verbatim_doc_comment
     )]
     max_streams: Option<u64>,
+
+    /// Maximum idle time for a UDP association (in milliseconds)
+    #[cfg(feature = "datagram")]
+    #[clap(
+        long,
+        help_heading = "Transport UDP",
+        value_name = "TIME",
+        default_value = "30000",
+        verbatim_doc_comment
+    )]
+    udp_idle_timeout: u64,
+
+    /// Buffer size for receiving UDP packets (in bytes)
+    #[cfg(feature = "datagram")]
+    #[clap(
+        long,
+        help_heading = "Transport UDP",
+        value_name = "BYTES",
+        default_value = "1500",
+        verbatim_doc_comment
+    )]
+    udp_buffer_size: usize,
 
     /// Logging level (e.g., INFO, WARN, ERROR)
     #[cfg(feature = "tracing")]

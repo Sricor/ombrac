@@ -1,11 +1,18 @@
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_channel::Receiver;
 use quinn::IdleTimeout;
+use tokio::task::JoinHandle;
 
-use super::{Connection, Result, error::Error, stream::Stream};
+#[cfg(feature = "datagram")]
+use crate::quic::datagram::Datagram;
+use crate::Acceptor;
+
+use super::{Result, error::Error, stream::Stream};
 
 pub struct Builder {
     listen: SocketAddr,
@@ -80,12 +87,12 @@ impl Builder {
         self
     }
 
-    pub async fn build(self) -> Result<Connection> {
-        Connection::with_server(self).await
+    pub async fn build(self) -> Result<QuicServer> {
+        QuicServer::with_server(self).await
     }
 }
 
-impl Connection {
+impl QuicServer {
     async fn with_server(config: Builder) -> Result<Self> {
         let tls_config = {
             use quinn::crypto::rustls::QuicServerConfig;
@@ -208,11 +215,35 @@ impl Connection {
             }
         });
 
-        Ok(Connection {
+        Ok(QuicServer {
             handle,
             stream: receiver,
             #[cfg(feature = "datagram")]
             datagram: datagram_receiver,
         })
+    }
+}
+
+pub struct QuicServer {
+    handle: JoinHandle<()>,
+    #[cfg(feature = "datagram")]
+    datagram: Receiver<Datagram>,
+    stream: Receiver<Stream>,
+}
+
+impl Acceptor for QuicServer {
+    async fn accept_bidirectional(&self) -> io::Result<impl crate::Reliable> {
+        self.stream
+            .recv()
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    #[cfg(feature = "datagram")]
+    async fn accept_datagram(&self) -> io::Result<impl crate::Unreliable> {
+        self.datagram
+            .recv()
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))
     }
 }
