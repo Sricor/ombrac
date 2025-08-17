@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use clap::Parser;
 mod server;
+
+#[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::server::Builder;
 
 #[derive(Parser, Debug)]
