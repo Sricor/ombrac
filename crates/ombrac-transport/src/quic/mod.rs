@@ -10,7 +10,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::{fs, io};
 
-#[cfg(feature = "datagram")]
 use async_channel::Receiver;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::task::JoinHandle;
@@ -86,3 +85,4 @@ impl Acceptor for Connection {
             .map_err(|e| io::Error::other(e.to_string()))
     }
 }
+
