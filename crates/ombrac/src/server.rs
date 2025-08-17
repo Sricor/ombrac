@@ -13,7 +13,7 @@ use crate::connect::Connect;
 ///
 /// It uses a generic `Acceptor` trait to remain transport-agnostic.
 pub struct Server<T> {
-    transport: T,
+    pub transport: T,
 }
 
 impl<T: Acceptor> Server<T> {

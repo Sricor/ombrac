@@ -7,11 +7,12 @@ use std::time::Duration;
 use clap::Parser;
 #[cfg(feature = "datagram")]
 use ombrac::server::datagram::UdpHandlerConfig;
-use ombrac::server::{SecretValid, Server};
+use ombrac::{prelude::Connect, server::{SecretValid, Server, Validator}};
 use ombrac_macros::{error, info};
 use ombrac_transport::Acceptor;
 #[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::{Congestion, server::Builder};
+use tokio::net::TcpStream;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -259,11 +260,18 @@ async fn run_server(
         let transport = Arc::clone(&transport);
         tokio::spawn(async move {
             loop {
-                match transport.accept_connect().await {
-                    Ok(stream) => tokio::spawn(async move {
-                        if let Err(_error) = Server::handle_connect(&validator, stream).await {
-                            error!("{_error}");
-                        }
+                match transport.transport.accept_bidirectional().await {
+                    Ok(mut stream) => tokio::spawn(async move {
+                        let connect = Connect::from_async_read(&mut stream).await?;
+
+                        let target = connect.address.to_socket_addr().await?;
+                        validator
+                            .is_valid(connect.secret, Some(target), None)
+                            .await?;
+
+                        let mut tcp_stream = TcpStream::connect(target).await?;
+
+                        ombrac::io::util::copy_bidirectional(&mut stream, &mut tcp_stream).await
                     }),
 
                     Err(error) => return Err::<(), io::Error>(error),
