@@ -4,10 +4,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod server;
+
 use clap::Parser;
 #[cfg(feature = "datagram")]
 use ombrac::server::datagram::UdpHandlerConfig;
-use ombrac::{prelude::Connect, server::{SecretValid, Server, Validator}};
+use ombrac::{
+    prelude::Connect,
+    server::{SecretValid, Server, Validator},
+};
 use ombrac_macros::{error, info};
 use ombrac_transport::Acceptor;
 #[cfg(feature = "transport-quic")]
@@ -203,14 +208,20 @@ async fn main() -> io::Result<()> {
 
     #[cfg(feature = "transport-quic")]
     {
+        let transport = quic_server_from_args(&args).await?;
         info!("Server listening on {}", args.listen);
-        let transport = Arc::new(Server::new(quic_server_from_args(&args).await?));
-        run_server(
-            transport,
-            validator,
-            #[cfg(feature = "datagram")]
-            udp_config,
-        ).await?;
+        server::Server::new(*blake3::hash(args.secret.as_bytes()).as_bytes(), transport)
+            .listen()
+            .await
+            .unwrap();
+
+        // let transport = Arc::new(Server::new));
+        // run_server(
+        //     transport,
+        //     validator,
+        //     #[cfg(feature = "datagram")]
+        //     udp_config,
+        // ).await?;
     }
 
     Ok(())
