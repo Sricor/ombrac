@@ -20,8 +20,8 @@ pub mod ombrac_client_tun {
     use std::{sync::Arc, time::Duration};
 
     use futures::{SinkExt, StreamExt};
-    use ombrac::{prelude::Associate, Secret};
     use ombrac::client::Client;
+    use ombrac::{Secret, prelude::Associate};
     use ombrac_transport::Initiator;
     use tracing::{error, info, trace};
     use tun_rs::AsyncDevice;
@@ -229,7 +229,9 @@ pub mod ombrac_client_tun {
                 };
 
                 let a = outbound.associate().await.unwrap();
-                a.send(Associate::with(secret, target, packet.data.into_bytes())).await.unwrap();
+                a.send(Associate::with(secret, target, packet.data.into_bytes()))
+                    .await
+                    .unwrap();
             }
         }
     }
