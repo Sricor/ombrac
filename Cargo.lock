@@ -197,7 +197,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "benches"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "criterion",
  "ombrac",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "bytes",
  "futures",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac-client"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "blake3",
  "bytes",
@@ -1496,11 +1496,11 @@ dependencies = [
 
 [[package]]
 name = "ombrac-macros"
-version = "0.5.14"
+version = "0.5.15"
 
 [[package]]
 name = "ombrac-server"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "blake3",
  "bytes",
@@ -1516,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "ombrac-transport"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "arc-swap",
  "async-channel",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "tests-integration"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "curl",
  "ntest",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "tests-support"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "rcgen",
  "tokio",

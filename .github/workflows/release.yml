@@ -84,7 +84,6 @@ jobs:
         run: |
           cargo build --release --verbose --target ${{ matrix.target }}
           cargo build --release --verbose --all-features --target ${{ matrix.target }}
-          cargo build --release --verbose --no-default-features --target ${{ matrix.target }}
 
       - name: Build binaries
         run: |
