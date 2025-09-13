@@ -198,8 +198,8 @@ pub mod ombrac_client_tun {
             fakedns: Arc<FakeDns>,
         ) {
             use ombrac::address::{Address, Domain};
-
             let (mut r, mut w) = socket.split();
+
             while let Some(packet) = r.recv().await {
                 let local_addr = packet.local_addr;
                 let remote_addr = packet.remote_addr;
@@ -228,8 +228,23 @@ pub mod ombrac_client_tun {
                     Address::from(remote_addr)
                 };
 
-                let a = outbound.associate().await.unwrap();
-                a.send(Associate::with(secret, target, packet.data.into_bytes()))
+                let outbound = Arc::new(outbound.associate().await.unwrap());
+                let outbound_clone = outbound.clone();
+
+                // tokio::spawn(async move {
+                //     while let Ok(packet) = outbound_clone.recv().await {
+                //         let response_packet = UdpPacket {
+                //             data: stack::Packet::new(packet.data),
+                //             local_addr: ,
+                //             remote_addr: local_addr,
+                //         };
+
+                //         w.send()
+                //     }
+                // });
+
+                outbound
+                    .send(Associate::with(secret, target, packet.data.into_bytes()))
                     .await
                     .unwrap();
             }

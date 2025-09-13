@@ -3,17 +3,14 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ombrac_macros::{debug, error};
+use async_channel::{Receiver, Sender};
+use ombrac_macros::{debug, error, info};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::watch;
 
-#[cfg(feature = "datagram")]
-use crate::Unreliable;
 use crate::quic::TransportConfig;
-#[cfg(feature = "datagram")]
-use crate::quic::datagram::{Datagram, Session};
-use crate::quic::stream::Stream;
-use crate::{Acceptor, Reliable};
+use crate::quic::stream::{Datagram, Stream};
+use crate::{Acceptor, Reliable, Unreliable};
 
 use super::error::{Error, Result};
 
@@ -116,9 +113,8 @@ impl Config {
 
 pub struct Server {
     endpoint: Arc<quinn::Endpoint>,
-    stream_receiver: async_channel::Receiver<Stream>,
-    #[cfg(feature = "datagram")]
-    datagram_receiver: async_channel::Receiver<Datagram>,
+    stream_receiver: Receiver<Stream>,
+    datagram_receiver: Receiver<Datagram>,
     shutdown_sender: watch::Sender<()>,
 }
 
@@ -137,14 +133,12 @@ impl Server {
         )?);
 
         let (stream_sender, stream_receiver) = async_channel::unbounded();
-        #[cfg(feature = "datagram")]
         let (datagram_sender, datagram_receiver) = async_channel::unbounded();
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
 
         tokio::spawn(run(
             endpoint.clone(),
             stream_sender,
-            #[cfg(feature = "datagram")]
             datagram_sender,
             shutdown_receiver,
         ));
@@ -152,12 +146,12 @@ impl Server {
         Ok(Self {
             endpoint,
             stream_receiver,
-            #[cfg(feature = "datagram")]
             datagram_receiver,
             shutdown_sender,
         })
     }
 
+    /// Signals the server to stop accepting new connections and shutdown gracefully.
     pub fn shutdown(&self) {
         let _ = self.shutdown_sender.send(());
     }
@@ -165,18 +159,18 @@ impl Server {
     pub async fn accept_bidirectional(&self) -> Result<Stream> {
         match self.stream_receiver.recv().await {
             Ok(value) => Ok(value),
-            Err(_err) => Err(Error::ConnectionClosed),
+            Err(_) => Err(Error::ConnectionClosed),
         }
     }
 
-    #[cfg(feature = "datagram")]
     pub async fn accept_datagram(&self) -> Result<Datagram> {
         match self.datagram_receiver.recv().await {
             Ok(value) => Ok(value),
-            Err(_err) => Err(Error::ConnectionClosed),
+            Err(_) => Err(Error::ConnectionClosed),
         }
     }
 
+    /// Closes all connections immediately and stops accepting new ones.
     pub fn close(&self) {
         self.endpoint.close(0u32.into(), b"Server closed");
     }
@@ -187,13 +181,64 @@ impl Server {
     }
 
     /// Switch to a new UDP socket
-    pub async fn rebind(&self, socket: UdpSocket) -> Result<()> {
+    pub fn rebind(&self, socket: UdpSocket) -> Result<()> {
         Ok(self.endpoint.rebind(socket)?)
     }
 
     /// Wait for all connections on the endpoint to be cleanly shut down
-    pub async fn wait_idle(&self) -> () {
+    pub async fn wait_idle(&self) {
         self.endpoint.wait_idle().await
+    }
+}
+
+async fn run(
+    endpoint: Arc<quinn::Endpoint>,
+    stream_sender: Sender<Stream>,
+    datagram_sender: Sender<Datagram>,
+    mut shutdown_receiver: watch::Receiver<()>,
+) {
+    loop {
+        let stream_sender = stream_sender.clone();
+        let datagram_sender = datagram_sender.clone();
+        let endpoint = endpoint.clone();
+
+        tokio::select! {
+            Some(conn) = endpoint.accept() => {
+                tokio::spawn(async move {
+                    match conn.await {
+                        Ok(new_connection) => {
+                            info!("New connection from: {}", new_connection.remote_address());
+                            let connection = Arc::new(new_connection);
+                            if datagram_sender.send(Datagram(Arc::clone(&connection).into())).await.is_err() {
+                                error!("Datagram receiver dropped, cannot accept new datagram")
+                            };
+
+                            loop {
+                                tokio::select! {
+                                    Ok((send, recv)) = connection.accept_bi() => {
+                                        if stream_sender.send(Stream(send, recv)).await.is_err() {
+                                            error!("Stream receiver dropped, cannot accept new streams");
+                                            break;
+                                        }
+                                    }
+                                    else => {
+                                        debug!("Connection handling loop finished for {}", connection.remote_address());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(_err) => {
+                            error!("Connection error: {}", _err);
+                        }
+                    }
+                });
+            }
+            _ = shutdown_receiver.changed() => {
+                endpoint.close(0u32.into(), b"Server shutting down");
+                break;
+            }
+        }
     }
 }
 
@@ -202,85 +247,7 @@ impl Acceptor for Server {
         Ok(Server::accept_bidirectional(self).await?)
     }
 
-    #[cfg(feature = "datagram")]
     async fn accept_datagram(&self) -> io::Result<impl Unreliable> {
         Ok(Server::accept_datagram(self).await?)
-    }
-}
-
-async fn run(
-    endpoint: Arc<quinn::Endpoint>,
-    stream_sender: async_channel::Sender<Stream>,
-    #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
-    mut shutdown_receiver: watch::Receiver<()>,
-) {
-    loop {
-        tokio::select! {
-            _ = shutdown_receiver.changed() => {
-                break;
-            }
-
-            maybe_conn = endpoint.accept() => {
-                match maybe_conn {
-                    Some(conn) => {
-                        tokio::spawn(handle_connection(
-                            conn,
-                            stream_sender.clone(),
-                            #[cfg(feature = "datagram")]
-                            datagram_sender.clone(),
-                        ));
-                    }
-                    None => {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    endpoint.wait_idle().await;
-}
-
-async fn handle_connection(
-    conn: quinn::Incoming,
-    stream_sender: async_channel::Sender<Stream>,
-    #[cfg(feature = "datagram")] datagram_sender: async_channel::Sender<Datagram>,
-) {
-    match conn.await {
-        Ok(connection) => {
-            let _remote_addr = connection.remote_address();
-            debug!("Connection from {}", _remote_addr);
-
-            #[cfg(feature = "datagram")]
-            {
-                let session = Session::with_server(connection.clone());
-                tokio::spawn(async move {
-                    while let Some(datagram) = session.accept_datagram().await {
-                        if datagram_sender.send(datagram).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
-
-            while let Ok((send_stream, recv_stream)) = connection.accept_bi().await {
-                if stream_sender
-                    .send(Stream(send_stream, recv_stream))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }
-        Err(_e) => {
-            error!("Failed to accept connection: {_e}")
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }

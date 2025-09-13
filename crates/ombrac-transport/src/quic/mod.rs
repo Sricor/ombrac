@@ -1,5 +1,3 @@
-#[cfg(feature = "datagram")]
-mod datagram;
 mod error;
 mod stream;
 

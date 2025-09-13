@@ -7,21 +7,11 @@ use arc_swap::{ArcSwap, Guard};
 use ombrac_macros::{debug, error, info, warn};
 use tokio::sync::Mutex;
 
-#[cfg(feature = "datagram")]
-use crate::Unreliable;
 use crate::quic::TransportConfig;
-#[cfg(feature = "datagram")]
-use crate::quic::datagram::{Datagram, Session};
-use crate::quic::stream::Stream;
+use crate::quic::stream::{Datagram, Stream};
 use crate::{Initiator, Reliable};
 
 use super::{Result, error::Error};
-
-pub struct Connection {
-    inner: quinn::Connection,
-    #[cfg(feature = "datagram")]
-    datagram_session: Session,
-}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -109,7 +99,7 @@ impl Config {
 pub struct Client {
     config: Config,
     endpoint: quinn::Endpoint,
-    connection: ArcSwap<Connection>,
+    connection: ArcSwap<quinn::Connection>,
     reconnect_lock: Mutex<()>,
 }
 
@@ -137,14 +127,7 @@ impl Client {
             config.server_addr, &config.server_name
         );
 
-        let connection = ArcSwap::new(
-            Connection {
-                inner: connection.clone(),
-                #[cfg(feature = "datagram")]
-                datagram_session: Session::with_client(connection),
-            }
-            .into(),
-        );
+        let connection = ArcSwap::new(Arc::new(connection));
 
         Ok(Self {
             config,
@@ -156,7 +139,7 @@ impl Client {
 
     pub async fn open_bidirectional(&self) -> Result<Stream> {
         let conn_arc = self.connection.load();
-        match conn_arc.inner.open_bi().await {
+        match conn_arc.open_bi().await {
             Ok((send, recv)) => Ok(Stream(send, recv)),
             Err(quinn::ConnectionError::ApplicationClosed(_))
             | Err(quinn::ConnectionError::ConnectionClosed(_))
@@ -174,26 +157,13 @@ impl Client {
         }
     }
 
-    #[cfg(feature = "datagram")]
     pub async fn open_datagram(&self) -> Result<Datagram> {
-        let conn_arc = self.connection.load();
-        conn_arc
-            .datagram_session
-            .open_datagram()
-            .await
-            .ok_or(Error::ConnectionClosed)
+        Ok(Datagram(self.connection.load()))
     }
 
     pub async fn reconnect(&self) -> Result<()> {
         let _lock = self.reconnect_lock.lock().await;
-
-        let new_connection = { self.connect().await? };
-
-        self.connection.store(Arc::new(Connection {
-            inner: new_connection.clone(),
-            #[cfg(feature = "datagram")]
-            datagram_session: Session::with_client(new_connection),
-        }));
+        self.connection.store(Arc::new(self.connect().await?));
         Ok(())
     }
 
@@ -219,23 +189,16 @@ impl Client {
 
     async fn reconnect_and_open_bi(
         &self,
-        old_conn_arc: Guard<Arc<Connection>>,
+        old_conn_arc: Guard<Arc<quinn::Connection>>,
     ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
         let _lock = self.reconnect_lock.lock().await;
 
         if !Arc::ptr_eq(&*old_conn_arc, &*self.connection.load()) {
-            return Ok(self.connection.load().inner.open_bi().await?);
+            return Ok(self.connection.load().open_bi().await?);
         }
+        self.connection.store(Arc::new(self.connect().await?));
 
-        let new_connection = { self.connect().await? };
-
-        self.connection.store(Arc::new(Connection {
-            inner: new_connection.clone(),
-            #[cfg(feature = "datagram")]
-            datagram_session: Session::with_client(new_connection),
-        }));
-
-        Ok(self.connection.load().inner.open_bi().await?)
+        Ok(self.connection.load().open_bi().await?)
     }
 
     async fn connect(&self) -> Result<quinn::Connection> {
@@ -276,8 +239,7 @@ impl Initiator for Client {
         Ok(Client::open_bidirectional(self).await?)
     }
 
-    #[cfg(feature = "datagram")]
-    async fn open_datagram(&self) -> io::Result<impl Unreliable> {
+    async fn open_datagram(&self) -> io::Result<impl crate::Unreliable> {
         Ok(Client::open_datagram(self).await?)
     }
 }
