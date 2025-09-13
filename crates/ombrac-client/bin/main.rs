@@ -321,12 +321,45 @@ async fn main() -> io::Result<()> {
 
         #[cfg(feature = "endpoint-socks")]
         {
+            let client = client.clone();
             let mut socks_shutdown_rx = shutdown_tx.subscribe();
             let socks_handle = run_socks_server(client, secret, args.socks, async move {
                 let _ = socks_shutdown_rx.recv().await;
             })
             .await?;
             handles.push(socks_handle);
+        }
+
+        {
+            let client = client.clone();
+            use ombrac_client::endpoint::tun::ombrac_client_tun::Tun;
+            let mut tun_shutdown_rx = shutdown_tx.subscribe();
+
+            let gateway_v4: ipnet::Ipv4Net = "198.19.0.2/24".parse().unwrap();
+            let dest: ipnet::Ipv4Net = "198.19.0.1/24".parse().unwrap();
+            let gateway_v6: ipnet::Ipv6Net = "fc00:fac::2/64".parse().unwrap();
+            let tun_name = "utun1989";
+            let tun_builder = tun_rs::DeviceBuilder::new()
+                .name(tun_name)
+                .mtu(
+                    1500, // Default MTU for TUN devices
+                )
+                .ipv4(gateway_v4.addr(), gateway_v4.netmask(), Some(dest.addr()))
+                .ipv6(gateway_v6.addr(), gateway_v6.netmask());
+
+            let dev = tun_builder.build_async().expect("must create tun device");
+
+            let tun_handle = tokio::spawn(async move {
+                Tun {
+                    ombrac_client: client,
+                    secret,
+                }
+                .run(dev.into_fd().unwrap(), async move {
+                    let _ = tun_shutdown_rx.recv().await;
+                })
+                .await;
+            });
+            handles.push(tun_handle);
         }
 
         tokio::select! {

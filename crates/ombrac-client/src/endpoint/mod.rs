@@ -3,3 +3,5 @@ pub mod socks;
 
 #[cfg(feature = "endpoint-http")]
 pub mod http;
+
+pub mod tun;

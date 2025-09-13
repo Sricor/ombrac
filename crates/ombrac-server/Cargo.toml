@@ -17,6 +17,7 @@ path = "bin/main.rs"
 [features]
 default = [
     "tracing",
+    "datagram",
     "transport-default"
 ]
 
