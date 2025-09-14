@@ -31,9 +31,9 @@ impl Default for Config {
             tcp_recv_buffer_size: 16 * 1024,
             buffer_pool_size: 128,
             default_buffer_size: 2 * 1024,
-            ipv4_addr: Ipv4Addr::from(DEFAULT_IPV4_ADDR),
+            ipv4_addr: DEFAULT_IPV4_ADDR,
             ipv4_prefix_len: 24,
-            ipv6_addr: Ipv6Addr::from(DEFAULT_IPV6_ADDR),
+            ipv6_addr: DEFAULT_IPV6_ADDR,
             ipv6_prefix_len: 64,
         }
     }

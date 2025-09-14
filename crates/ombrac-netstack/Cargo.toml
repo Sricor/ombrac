@@ -18,9 +18,9 @@ tracing = [
 [dependencies]
 bytes = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "io-util", "macros", "time"] }
 tracing = { workspace = true, optional = true }
-rand = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 smoltcp = { workspace = true, features = [
     "std",
     "async",

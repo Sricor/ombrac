@@ -320,11 +320,10 @@ impl TcpListener {
                     if let Ok(n) = socket.recv(|buffer| {
                         let n = buf.enqueue_slice(buffer);
                         (n, n)
-                    }) {
-                        if n > 0 {
-                            trace!("Received {n} bytes from TCP socket");
-                            notify_read = true;
-                        }
+                    }) && n > 0
+                    {
+                        trace!("Received {n} bytes from TCP socket");
+                        notify_read = true;
                     }
                 }
                 if notify_read {
@@ -337,11 +336,10 @@ impl TcpListener {
                     if let Ok(n) = socket.send(|buffer| {
                         let n = buf.dequeue_slice(buffer);
                         (n, n)
-                    }) {
-                        if n > 0 {
-                            trace!("Sent {n} bytes to TCP socket");
-                            notify_write = true;
-                        }
+                    }) && n > 0
+                    {
+                        trace!("Sent {n} bytes to TCP socket");
+                        notify_write = true;
                     }
                 }
 
