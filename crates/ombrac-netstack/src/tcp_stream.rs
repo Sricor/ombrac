@@ -7,20 +7,16 @@ pub struct TcpStream {
     pub(crate) remote_addr: SocketAddr,
 
     pub(crate) handle: Arc<TcpStreamHandle>,
-    pub(crate) stack_notifier: tokio::sync::mpsc::UnboundedSender<IfaceEvent<'static>>,
+    pub(crate) stack_notifier: tokio::sync::mpsc::Sender<IfaceEvent<'static>>,
 }
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        trace!(
-            "TcpStream dropped: {} <-> {}",
-            self.local_addr, self.remote_addr
-        );
-
         self.handle
             .socket_dropped
             .store(true, std::sync::atomic::Ordering::Release);
-        if let Err(e) = self.stack_notifier.send(IfaceEvent::TcpSocketClosed) {
+
+        if let Err(e) = self.stack_notifier.try_send(IfaceEvent::TcpSocketClosed) {
             error!("Failed to notify TCP socket closed: {e}");
         }
     }
@@ -78,7 +74,7 @@ impl tokio::io::AsyncRead for TcpStream {
         buf.advance(n);
 
         self.stack_notifier
-            .send(IfaceEvent::TcpSocketReady)
+            .try_send(IfaceEvent::TcpSocketReady)
             .expect("Failed to notify TCP socket ready");
         trace!("TcpStream::poll_read: (proxy)read {n} bytes from recv buffer");
 
@@ -99,7 +95,7 @@ impl tokio::io::AsyncWrite for TcpStream {
             // Register the waker to be notified when space is available
             self.handle.send_waker.register(cx.waker());
             self.stack_notifier
-                .send(IfaceEvent::TcpSocketReady)
+                .try_send(IfaceEvent::TcpSocketReady)
                 .expect("Failed to notify TCP socket ready");
             return std::task::Poll::Pending;
         }
@@ -107,7 +103,7 @@ impl tokio::io::AsyncWrite for TcpStream {
         let n = send_buf.enqueue_slice(buf);
 
         self.stack_notifier
-            .send(IfaceEvent::TcpSocketReady)
+            .try_send(IfaceEvent::TcpSocketReady)
             .expect("Failed to notify TCP socket ready");
         trace!("TcpStream::poll_write: (proxy)write {n} bytes to send buffer");
 
@@ -119,7 +115,7 @@ impl tokio::io::AsyncWrite for TcpStream {
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         self.stack_notifier
-            .send(IfaceEvent::TcpSocketReady)
+            .try_send(IfaceEvent::TcpSocketReady)
             .expect("Failed to notify TCP socket ready");
         std::task::Poll::Ready(Ok(()))
     }

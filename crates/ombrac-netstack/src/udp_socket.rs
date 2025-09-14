@@ -1,26 +1,16 @@
-use super::{Packet, packet::IpPacket};
-
 use etherparse::PacketBuilder;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, trace};
+
+use crate::buffer::BufferPool;
+use crate::{Packet, packet::IpPacket};
+use crate::{error, trace};
 
 pub struct UdpPacket {
     pub data: Packet,
-    /// src of the packet
     pub local_addr: SocketAddr,
-    /// dst of the packet
     pub remote_addr: SocketAddr,
-}
-
-impl std::fmt::Debug for UdpPacket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UdpPacket")
-            .field("local_addr", &self.local_addr)
-            .field("remote_addr", &self.remote_addr)
-            .field("data_len", &self.data().len())
-            .finish()
-    }
 }
 
 impl<T> From<(T, SocketAddr, SocketAddr)> for UdpPacket
@@ -43,26 +33,36 @@ impl UdpPacket {
 }
 
 pub struct UdpSocket {
-    inbound: mpsc::UnboundedReceiver<Packet>,
+    inbound: mpsc::Receiver<Packet>,
     outbound: mpsc::Sender<Packet>,
+    buffer_pool: Arc<BufferPool>,
 }
 
 impl UdpSocket {
-    pub fn new(inbound: mpsc::UnboundedReceiver<Packet>, outbound: mpsc::Sender<Packet>) -> Self {
-        Self { inbound, outbound }
+    pub fn new(
+        inbound: mpsc::Receiver<Packet>,
+        outbound: mpsc::Sender<Packet>,
+        buffer_pool: Arc<BufferPool>,
+    ) -> Self {
+        Self {
+            inbound,
+            outbound,
+            buffer_pool,
+        }
     }
 
     pub fn split(self) -> (SplitRead, SplitWrite) {
         let read = SplitRead { recv: self.inbound };
         let write = SplitWrite {
             send: self.outbound,
+            buffer_pool: self.buffer_pool,
         };
         (read, write)
     }
 }
 
 pub struct SplitRead {
-    recv: mpsc::UnboundedReceiver<Packet>,
+    recv: mpsc::Receiver<Packet>,
 }
 
 impl SplitRead {
@@ -110,6 +110,7 @@ impl SplitRead {
 #[derive(Clone)]
 pub struct SplitWrite {
     send: mpsc::Sender<Packet>,
+    buffer_pool: Arc<BufferPool>,
 }
 
 impl SplitWrite {
@@ -135,12 +136,13 @@ impl SplitWrite {
             }
         };
 
-        let mut ip_packet_writer = Vec::with_capacity(builder.size(packet.data.data().len()));
+        let mut buffer = self.buffer_pool.get(builder.size(packet.data.data().len()));
         builder
-            .write(&mut ip_packet_writer, packet.data.data())
+            .write(&mut buffer, packet.data.data())
             .map_err(std::io::Error::other)?;
+        let final_bytes = buffer.split().freeze();
 
-        match self.send.send(Packet::new(ip_packet_writer)).await {
+        match self.send.send(Packet::new(final_bytes)).await {
             Ok(()) => Ok(()),
             Err(err) => Err(std::io::Error::other(format!("send error: {err}"))),
         }

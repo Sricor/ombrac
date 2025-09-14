@@ -1,31 +1,35 @@
-use smoltcp::{
-    phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
-    time::Instant,
-};
+use std::sync::Arc;
+
+use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::time::Instant;
 use tokio::sync::mpsc;
 
-use super::{Packet, stack::IfaceEvent};
+use crate::{Config, warn};
+use crate::{Packet, buffer::BufferPool, stack::IfaceEvent};
 
 pub struct NetstackDevice {
-    rx_sender: mpsc::UnboundedSender<Packet>,
-    rx_queue: mpsc::UnboundedReceiver<Packet>,
+    rx_sender: mpsc::Sender<Packet>,
+    rx_queue: mpsc::Receiver<Packet>,
 
     tx_sender: mpsc::Sender<Packet>,
     capabilities: DeviceCapabilities,
 
-    iface_notifier: mpsc::UnboundedSender<IfaceEvent<'static>>,
+    iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
+    buffer_pool: Arc<BufferPool>,
 }
 
 impl NetstackDevice {
     pub fn new(
         tx_sender: mpsc::Sender<Packet>,
-        iface_notifier: mpsc::UnboundedSender<IfaceEvent<'static>>,
+        iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
+        buffer_pool: Arc<BufferPool>,
+        config: &Config,
     ) -> Self {
         let mut capabilities = DeviceCapabilities::default();
-        capabilities.max_transmission_unit = 1500;
+        capabilities.max_transmission_unit = config.mtu;
         capabilities.medium = Medium::Ip;
 
-        let (rx_sender, rx_queue) = mpsc::unbounded_channel::<Packet>();
+        let (rx_sender, rx_queue) = mpsc::channel::<Packet>(config.channel_size);
 
         Self {
             rx_sender,
@@ -33,10 +37,11 @@ impl NetstackDevice {
             tx_sender,
             capabilities,
             iface_notifier,
+            buffer_pool,
         }
     }
 
-    pub fn create_injector(&self) -> mpsc::UnboundedSender<Packet> {
+    pub fn create_injector(&self) -> mpsc::Sender<Packet> {
         self.rx_sender.clone()
     }
 }
@@ -48,10 +53,13 @@ impl Device for NetstackDevice {
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         if let (Ok(packet), Ok(permit)) = (self.rx_queue.try_recv(), self.tx_sender.try_reserve()) {
             let rx_token = RxTokenImpl { packet };
-            let tx_token = TxTokenImpl { tx_sender: permit };
-            self.iface_notifier
-                .send(IfaceEvent::DeviceReady)
-                .expect("Failed to notify iface event");
+            let tx_token = TxTokenImpl {
+                tx_sender: permit,
+                buffer_pool: self.buffer_pool.clone(),
+            };
+            if let Err(e) = self.iface_notifier.try_send(IfaceEvent::DeviceReady) {
+                warn!("Failed to notify iface event: {}", e)
+            };
             return Some((rx_token, tx_token));
         }
 
@@ -61,7 +69,10 @@ impl Device for NetstackDevice {
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         self.tx_sender
             .try_reserve()
-            .map(|permit| TxTokenImpl { tx_sender: permit })
+            .map(|permit| TxTokenImpl {
+                tx_sender: permit,
+                buffer_pool: self.buffer_pool.clone(),
+            })
             .ok()
     }
 
@@ -84,6 +95,7 @@ impl RxToken for RxTokenImpl {
 }
 
 pub struct TxTokenImpl<'a> {
+    buffer_pool: Arc<BufferPool>,
     tx_sender: mpsc::Permit<'a, Packet>,
 }
 
@@ -92,10 +104,13 @@ impl<'a> TxToken for TxTokenImpl<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = vec![0u8; len];
+        let mut buffer = self.buffer_pool.get(len);
+        buffer.resize(len, 0);
+
         let result = f(&mut buffer);
 
-        let packet = Packet::new(buffer);
+        let filled_bytes = buffer.split_to(len);
+        let packet = Packet::new(filled_bytes.freeze());
         self.tx_sender.send(packet);
 
         result

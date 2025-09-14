@@ -332,7 +332,7 @@ async fn main() -> io::Result<()> {
 
         {
             let client = client.clone();
-            use ombrac_client::endpoint::tun::ombrac_client_tun::Tun;
+            use ombrac_client::endpoint::tun::Tun;
             let mut tun_shutdown_rx = shutdown_tx.subscribe();
 
             let gateway_v4: ipnet::Ipv4Net = "198.19.0.2/24".parse().unwrap();

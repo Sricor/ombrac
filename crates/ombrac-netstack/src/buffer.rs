@@ -1,13 +1,15 @@
-use std::{
-    cell::UnsafeCell,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::cell::UnsafeCell;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use bytes::{BufMut, BytesMut};
 
 pub struct LockFreeRingBuffer {
     buffer: UnsafeCell<Box<[u8]>>,
     capacity: usize,
-    write_pos: AtomicUsize, // Only TCP thread writes
-    read_pos: AtomicUsize,  // Only app thread reads
+    write_pos: AtomicUsize,
+    read_pos: AtomicUsize,
 }
 
 unsafe impl Send for LockFreeRingBuffer {}
@@ -23,12 +25,10 @@ impl LockFreeRingBuffer {
         }
     }
 
-    // TCP thread calls this (single producer)
     pub fn enqueue_slice(&self, data: &[u8]) -> usize {
         let write_pos = self.write_pos.load(Ordering::Relaxed);
         let read_pos = self.read_pos.load(Ordering::Acquire);
 
-        // Calculate available space
         let available = if read_pos <= write_pos {
             self.capacity - write_pos + read_pos - 1
         } else {
@@ -43,31 +43,25 @@ impl LockFreeRingBuffer {
         unsafe {
             let buffer = &mut *self.buffer.get();
 
-            // Handle wrap-around
             if write_pos + to_write <= self.capacity {
-                // No wrap
                 buffer[write_pos..write_pos + to_write].copy_from_slice(&data[..to_write]);
             } else {
-                // Wrap around
                 let first_part = self.capacity - write_pos;
                 buffer[write_pos..].copy_from_slice(&data[..first_part]);
                 buffer[..to_write - first_part].copy_from_slice(&data[first_part..to_write]);
             }
         }
 
-        // Update write position
         let new_write_pos = (write_pos + to_write) % self.capacity;
         self.write_pos.store(new_write_pos, Ordering::Release);
 
         to_write
     }
 
-    // App thread calls this (single consumer)
     pub fn dequeue_slice(&self, buf: &mut [u8]) -> usize {
         let read_pos = self.read_pos.load(Ordering::Relaxed);
         let write_pos = self.write_pos.load(Ordering::Acquire);
 
-        // Calculate available data
         let available = if write_pos >= read_pos {
             write_pos - read_pos
         } else {
@@ -82,19 +76,15 @@ impl LockFreeRingBuffer {
         unsafe {
             let buffer = &*self.buffer.get();
 
-            // Handle wrap-around
             if read_pos + to_read <= self.capacity {
-                // No wrap
                 buf[..to_read].copy_from_slice(&buffer[read_pos..read_pos + to_read]);
             } else {
-                // Wrap around
                 let first_part = self.capacity - read_pos;
                 buf[..first_part].copy_from_slice(&buffer[read_pos..]);
                 buf[first_part..to_read].copy_from_slice(&buffer[..to_read - first_part]);
             }
         }
 
-        // Update read position
         let new_read_pos = (read_pos + to_read) % self.capacity;
         self.read_pos.store(new_read_pos, Ordering::Release);
 
@@ -109,5 +99,86 @@ impl LockFreeRingBuffer {
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let write_pos = self.write_pos.load(Ordering::Acquire);
         ((write_pos + 1) % self.capacity) == read_pos
+    }
+}
+
+#[derive(Clone)]
+pub struct BufferPool {
+    inner: Arc<Mutex<Vec<BytesMut>>>,
+    max_pool_size: usize,
+    default_buffer_size: usize,
+}
+
+impl BufferPool {
+    pub fn new(max_pool_size: usize, default_buffer_size: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::with_capacity(max_pool_size))),
+            max_pool_size,
+            default_buffer_size,
+        }
+    }
+
+    pub fn get(&self, capacity: usize) -> PooledBytesMut {
+        let mut pool = self.inner.lock().unwrap();
+        let required_capacity = std::cmp::max(capacity, self.default_buffer_size);
+
+        let mut buffer = pool
+            .pop()
+            .unwrap_or_else(|| BytesMut::with_capacity(required_capacity));
+
+        if buffer.capacity() < required_capacity {
+            buffer.reserve(required_capacity - buffer.capacity());
+        }
+
+        buffer.clear();
+
+        PooledBytesMut {
+            buffer: Some(buffer),
+            pool: self.clone(),
+        }
+    }
+
+    fn release(&self, buffer: BytesMut) {
+        let mut pool = self.inner.lock().unwrap();
+        if pool.len() < self.max_pool_size {
+            pool.push(buffer);
+        }
+    }
+}
+
+pub struct PooledBytesMut {
+    buffer: Option<BytesMut>,
+    pool: BufferPool,
+}
+
+impl Drop for PooledBytesMut {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            self.pool.release(buffer);
+        }
+    }
+}
+
+impl Deref for PooledBytesMut {
+    type Target = BytesMut;
+    fn deref(&self) -> &Self::Target {
+        self.buffer.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for PooledBytesMut {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.buffer.as_mut().unwrap()
+    }
+}
+
+impl std::io::Write for PooledBytesMut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.put_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

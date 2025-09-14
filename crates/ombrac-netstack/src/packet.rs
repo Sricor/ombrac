@@ -40,7 +40,6 @@ impl<T: AsRef<[u8]> + Copy> IpPacket<T> {
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> IpPacket<&'a T> {
-    /// Return a pointer to the payload.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
         match *self {

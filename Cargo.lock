@@ -1482,6 +1482,7 @@ dependencies = [
  "libc",
  "ombrac",
  "ombrac-macros",
+ "ombrac-netstack",
  "ombrac-transport",
  "rand",
  "smoltcp",
@@ -1499,6 +1500,19 @@ dependencies = [
 [[package]]
 name = "ombrac-macros"
 version = "0.5.15"
+
+[[package]]
+name = "ombrac-netstack"
+version = "0.5.15"
+dependencies = [
+ "bytes",
+ "etherparse",
+ "futures",
+ "rand",
+ "smoltcp",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "ombrac-server"

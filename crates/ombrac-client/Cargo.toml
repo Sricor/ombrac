@@ -23,9 +23,10 @@ default = [
 ]
 
 tracing = [
-    "dep:tracing", 
+    "dep:tracing",
     "dep:tracing-appender",
     "dep:tracing-subscriber",
+    "ombrac-netstack/tracing",
     "ombrac-transport/tracing"
 ]
 
@@ -50,6 +51,7 @@ datagram = [
 ombrac = { workspace = true }
 ombrac-macros = { workspace = true }
 ombrac-transport = { workspace = true }
+ombrac-netstack = { workspace = true }
 bytes = { workspace = true }
 blake3 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal"] }

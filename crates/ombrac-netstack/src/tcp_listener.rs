@@ -13,43 +13,36 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{error, trace, warn};
 
+use crate::{buffer::BufferPool, Config};
+
 use super::{
-    Packet, device::NetstackDevice, packet::IpPacket, ring_buffer::LockFreeRingBuffer,
+    Packet, device::NetstackDevice, packet::IpPacket, buffer::LockFreeRingBuffer,
     stack::IfaceEvent, tcp_stream::TcpStream,
 };
-
-const DEFAULT_TCP_SEND_BUFFER_SIZE: u32 = 256 * 1024; // 512 KB
-const DEFAULT_TCP_RECV_BUFFER_SIZE: u32 = 256 * 1024; // 512 KB
 
 pub(crate) struct TcpStreamHandle {
     pub(crate) recv_buffer: LockFreeRingBuffer,
     pub(crate) recv_waker: AtomicWaker,
     pub(crate) send_buffer: LockFreeRingBuffer,
     pub(crate) send_waker: AtomicWaker,
-
     pub(crate) socket_dropped: AtomicBool,
 }
 
 impl TcpStreamHandle {
-    pub fn new() -> Self {
+    pub fn new(recv_buffer_size: usize, send_buffer_size: usize) -> Self {
         Self {
-            recv_buffer: LockFreeRingBuffer::new(DEFAULT_TCP_RECV_BUFFER_SIZE as usize),
+            recv_buffer: LockFreeRingBuffer::new(recv_buffer_size),
             recv_waker: AtomicWaker::new(),
-            send_buffer: LockFreeRingBuffer::new(DEFAULT_TCP_SEND_BUFFER_SIZE as usize),
+            send_buffer: LockFreeRingBuffer::new(send_buffer_size),
             send_waker: AtomicWaker::new(),
             socket_dropped: AtomicBool::new(false),
         }
     }
 }
 
-impl Drop for TcpStreamHandle {
-    fn drop(&mut self) {
-        trace!("TcpStreamHandle dropped");
-    }
-}
 
 pub struct TcpListener {
-    socket_stream: mpsc::UnboundedReceiver<TcpStream>,
+    socket_stream: mpsc::Receiver<TcpStream>,
     socket_stream_waker: Arc<AtomicWaker>,
 
     task_handle: tokio::task::JoinHandle<()>,
@@ -63,13 +56,13 @@ impl Drop for TcpListener {
 }
 
 impl TcpListener {
-    pub fn new(inbound: mpsc::UnboundedReceiver<Packet>, outbound: mpsc::Sender<Packet>) -> Self {
+    pub fn new(inbound: mpsc::Receiver<Packet>, outbound: mpsc::Sender<Packet>, buffer_pool: Arc<BufferPool>, config_c: Config) -> Self {
         // the global bus that drives the iface polling
-        let (iface_notifier, iface_notifier_rx) = mpsc::unbounded_channel();
+        let (iface_notifier, iface_notifier_rx) = mpsc::channel(config_c.channel_size);
 
         let mut config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
         config.random_seed = rand::random();
-        let mut device = NetstackDevice::new(outbound, iface_notifier.clone());
+        let mut device = NetstackDevice::new(outbound, iface_notifier.clone(), buffer_pool, &config_c);
         let mut iface =
             smoltcp::iface::Interface::new(config, &mut device, smoltcp::time::Instant::now());
         iface.set_any_ip(true);
@@ -95,7 +88,7 @@ impl TcpListener {
             ))
             .expect("Failed to add default IPv6 route");
 
-        let (socket_stream_emitter, socket_stream) = mpsc::unbounded_channel::<TcpStream>();
+        let (socket_stream_emitter, socket_stream) = mpsc::channel::<TcpStream>(config_c.channel_size);
 
         let socket_stream_waker = Arc::new(AtomicWaker::new());
 
@@ -103,7 +96,7 @@ impl TcpListener {
         let task_handle = tokio::spawn(async move {
             let rv = tokio::select! {
                 biased;
-                rv = Self::poll_packets(inbound, device.create_injector(), iface_notifier, socket_stream_emitter, waker) => rv,
+                rv = Self::poll_packets(inbound, device.create_injector(), iface_notifier, socket_stream_emitter, waker, &config_c) => rv,
                 rv = Self::poll_sockets(&mut iface, &mut device, iface_notifier_rx) => rv,
             };
             if let Err(e) = rv {
@@ -119,11 +112,12 @@ impl TcpListener {
     }
 
     async fn poll_packets(
-        mut inbound: mpsc::UnboundedReceiver<Packet>,
-        device_injector: mpsc::UnboundedSender<Packet>,
-        iface_notifier: mpsc::UnboundedSender<IfaceEvent<'static>>,
-        tcp_stream_emitter: mpsc::UnboundedSender<TcpStream>,
+        mut inbound: mpsc::Receiver<Packet>,
+        device_injector: mpsc::Sender<Packet>,
+        iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
+        tcp_stream_emitter: mpsc::Sender<TcpStream>,
         tcp_stream_waker: Arc<AtomicWaker>,
+        config: &Config
     ) -> std::io::Result<()> {
         let mut packet_buf = Vec::with_capacity(32);
         while let n = inbound.recv_many(&mut packet_buf, 32).await
@@ -141,14 +135,14 @@ impl TcpListener {
 
                 // Specially handle icmp packet by TCP interface.
                 if matches!(packet.protocol(), IpProtocol::Icmp | IpProtocol::Icmpv6) {
-                    match device_injector.send(frame) {
+                    match device_injector.try_send(frame) {
                         Ok(_) => {}
                         Err(err) => {
                             warn!("Failed to send packet to device: {err}");
                             continue;
                         }
                     };
-                    match iface_notifier.send(IfaceEvent::Icmp) {
+                    match iface_notifier.try_send(IfaceEvent::Icmp) {
                         Ok(_) => continue,
                         Err(err) => {
                             warn!("Failed to send ICMP event: {err}");
@@ -179,8 +173,8 @@ impl TcpListener {
 
                 if packet.syn() && !packet.ack() {
                     let mut socket = tcp::Socket::new(
-                        tcp::SocketBuffer::new(vec![0u8; DEFAULT_TCP_RECV_BUFFER_SIZE as usize]),
-                        tcp::SocketBuffer::new(vec![0u8; DEFAULT_TCP_SEND_BUFFER_SIZE as usize]),
+                        tcp::SocketBuffer::new(vec![0u8; config.tcp_recv_buffer_size]),
+                        tcp::SocketBuffer::new(vec![0u8; config.tcp_send_buffer_size]),
                     );
                     socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(28)));
 
@@ -199,10 +193,10 @@ impl TcpListener {
 
                     trace!("created TCP connection for {src_addr} <-> {dst_addr}");
 
-                    let handle = Arc::new(TcpStreamHandle::new());
+                    let handle = Arc::new(TcpStreamHandle::new(config.tcp_recv_buffer_size, config.tcp_send_buffer_size));
 
                     tcp_stream_emitter
-                        .send(TcpStream {
+                        .try_send(TcpStream {
                             local_addr: src_addr,
                             remote_addr: dst_addr,
 
@@ -214,7 +208,7 @@ impl TcpListener {
                             std::io::Error::other("Failed to send TCP stream")
                         })?;
                     iface_notifier
-                        .send(IfaceEvent::TcpStream(Box::new((socket, handle))))
+                        .try_send(IfaceEvent::TcpStream(Box::new((socket, handle))))
                         .map_err(|e| {
                             error!("Failed to send TCP stream event: {e}");
                             std::io::Error::other("Failed to send TCP stream event")
@@ -222,14 +216,14 @@ impl TcpListener {
                     tcp_stream_waker.wake();
                 }
 
-                device_injector.send(frame).map_err(|e| {
+                device_injector.try_send(frame).map_err(|e| {
                     error!("Failed to send packet to device: {e}");
                     std::io::Error::other("Failed to inject packet to device")
                 })?;
             }
 
             // trigger another poll to drive the socket state machine
-            iface_notifier.send(IfaceEvent::DeviceReady).map_err(|e| {
+            iface_notifier.try_send(IfaceEvent::DeviceReady).map_err(|e| {
                 error!("Failed to send device ready event: {e}");
                 std::io::Error::other("Failed to send device ready event")
             })?;
@@ -241,7 +235,7 @@ impl TcpListener {
     async fn poll_sockets(
         iface: &mut Interface,
         device: &mut NetstackDevice,
-        mut notifier_rx: mpsc::UnboundedReceiver<IfaceEvent<'_>>,
+        mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);
         let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, Arc<TcpStreamHandle>> =
@@ -249,17 +243,12 @@ impl TcpListener {
 
         loop {
             let now = smoltcp::time::Instant::now();
-            // 根据 smoltcp 的建议计算下一次轮询的延时
             let delay = match iface.poll_delay(now, &sockets) {
                 Some(d) if d > smoltcp::time::Duration::ZERO => d.into(),
-                // 如果 smoltcp 要求立即轮询，或者没有给出建议，
-                // 我们设置一个零延时。这会让 tokio::time::sleep 立即完成，
-                // 但关键是它会让出当前任务的执行权，让调度器有机会运行其他任务。
                 _ => Duration::ZERO,
             };
 
             tokio::select! {
-                // biased 确保优先处理事件通知，减少不必要的延时
                 biased;
 
                 Some(event) = notifier_rx.recv() => {
@@ -311,10 +300,11 @@ impl TcpListener {
                     if let Ok(n) = socket.recv(|buffer| {
                         let n = buf.enqueue_slice(buffer);
                         (n, n)
-                    }) && n > 0
-                    {
-                        trace!("Received {n} bytes from TCP socket");
-                        notify_read = true;
+                    }) {
+                        if n > 0 {
+                            trace!("Received {n} bytes from TCP socket");
+                            notify_read = true;
+                        }
                     }
                 }
                 if notify_read {
@@ -327,10 +317,11 @@ impl TcpListener {
                     if let Ok(n) = socket.send(|buffer| {
                         let n = buf.dequeue_slice(buffer);
                         (n, n)
-                    }) && n > 0
-                    {
-                        trace!("Sent {n} bytes to TCP socket");
-                        notify_write = true;
+                    }) {
+                        if n > 0 {
+                            trace!("Sent {n} bytes to TCP socket");
+                            notify_write = true;
+                        }
                     }
                 }
 
@@ -364,7 +355,7 @@ impl TcpListener {
     async fn poll_sockets_a(
         iface: &mut Interface,
         device: &mut NetstackDevice,
-        mut notifier_rx: mpsc::UnboundedReceiver<IfaceEvent<'_>>,
+        mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
         // Create a socket set for TCP sockets
         let mut sockets = smoltcp::iface::SocketSet::new(vec![]);

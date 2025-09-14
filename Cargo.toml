@@ -10,7 +10,7 @@ members = [
     "benches",
     "tests/integration",
     "tests/support"
-]
+, "crates/ombrac-netstack"]
 
 [workspace.package]
 version = "0.5.15"
@@ -28,6 +28,7 @@ ombrac-client = { version = "0.5.15", path = "crates/ombrac-client", default-fea
 ombrac-server = { version = "0.5.15", path = "crates/ombrac-server", default-features = false }
 ombrac-macros = { version = "0.5.15", path = "crates/ombrac-macros", default-features = false }
 ombrac-transport = { version = "0.5.15", path = "crates/ombrac-transport", default-features = false }
+ombrac-netstack = { version = "0.5.15", path = "crates/ombrac-netstack", default-features = false }
 
 futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
@@ -37,6 +38,7 @@ dashmap = { version = "6", default-features = false }
 thiserror = { version = "2", default-features = false }
 async-channel = { version = "2", default-features = false }
 arc-swap = { version = "1.7", default-features = false }
+libc = { version = "0.2", default-features = false }
 
 # socks
 socks-lib = { version = "0.1", default-features = false }
