@@ -13,16 +13,6 @@ pub struct TcpStream {
     pub(crate) stack_notifier: tokio::sync::mpsc::Sender<IfaceEvent<'static>>,
 }
 
-impl Drop for TcpStream {
-    fn drop(&mut self) {
-        self.handle
-            .socket_dropped
-            .store(true, std::sync::atomic::Ordering::Release);
-
-        let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketClosed);
-    }
-}
-
 impl TcpStream {
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
@@ -94,5 +84,15 @@ impl AsyncWrite for TcpStream {
     ) -> Poll<std::io::Result<()>> {
         std::task::ready!(self.poll_flush(cx))?;
         Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        self.handle
+            .socket_dropped
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketClosed);
     }
 }
