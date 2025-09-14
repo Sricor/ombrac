@@ -240,7 +240,7 @@ impl<I: Initiator> Tun<I> {
             .await?;
 
         // Copy data bidirectionally between the local stream and the remote stream.
-        let _copy = tokio::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
+        let _copy = ombrac::io::util::copy_bidirectional(&mut stream, &mut remote_stream).await?;
 
         info!(
             "{} Connect {}, Sent: {}, Recv: {}",
