@@ -1,6 +1,10 @@
-use super::{stack::IfaceEvent, tcp_listener::TcpStreamHandle};
-use std::{net::SocketAddr, sync::Arc, task::ready};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
 use tracing::{error, trace};
+
+use crate::{stack::IfaceEvent, tcp_listener::TcpStreamHandle};
 
 pub struct TcpStream {
     pub(crate) local_addr: SocketAddr,
@@ -49,9 +53,9 @@ impl std::fmt::Debug for TcpStream {
 impl tokio::io::AsyncRead for TcpStream {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         trace!(
             "TcpStream::poll_read called: {} <-> {}",
             self.local_addr, self.remote_addr
@@ -61,7 +65,7 @@ impl tokio::io::AsyncRead for TcpStream {
         if read_buf.is_empty() {
             trace!("TcpStream::poll_read: recv buffer is empty, waiting for data");
             self.handle.recv_waker.register(cx.waker());
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
 
         let unfilled_slice = buf.initialize_unfilled();
@@ -73,16 +77,16 @@ impl tokio::io::AsyncRead for TcpStream {
             .expect("Failed to notify TCP socket ready");
         trace!("TcpStream::poll_read: (proxy)read {n} bytes from recv buffer");
 
-        std::task::Poll::Ready(Ok(()))
+        Poll::Ready(Ok(()))
     }
 }
 
 impl tokio::io::AsyncWrite for TcpStream {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+    ) -> Poll<std::io::Result<usize>> {
         let send_buf = &self.handle.send_buffer;
 
         if send_buf.is_full() {
@@ -92,7 +96,7 @@ impl tokio::io::AsyncWrite for TcpStream {
             self.stack_notifier
                 .try_send(IfaceEvent::TcpSocketReady)
                 .expect("Failed to notify TCP socket ready");
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
 
         let n = send_buf.enqueue_slice(buf);
@@ -102,25 +106,25 @@ impl tokio::io::AsyncWrite for TcpStream {
             .expect("Failed to notify TCP socket ready");
         trace!("TcpStream::poll_write: (proxy)write {n} bytes to send buffer");
 
-        std::task::Poll::Ready(Ok(n))
+        Poll::Ready(Ok(n))
     }
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+        _cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
         self.stack_notifier
             .try_send(IfaceEvent::TcpSocketReady)
             .expect("Failed to notify TCP socket ready");
-        std::task::Poll::Ready(Ok(()))
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        ready!(self.poll_flush(cx))?;
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        std::task::ready!(self.poll_flush(cx))?;
         trace!("TcpStream::poll_shutdown called, client side closing");
-        std::task::Poll::Ready(Ok(()))
+        Poll::Ready(Ok(()))
     }
 }

@@ -1,9 +1,11 @@
 use std::cell::UnsafeCell;
+use std::io;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use bytes::{BufMut, BytesMut};
+use crossbeam_queue::SegQueue;
 
 pub struct LockFreeRingBuffer {
     buffer: UnsafeCell<Box<[u8]>>,
@@ -104,7 +106,7 @@ impl LockFreeRingBuffer {
 
 #[derive(Clone)]
 pub struct BufferPool {
-    inner: Arc<Mutex<Vec<BytesMut>>>,
+    pool: Arc<SegQueue<BytesMut>>,
     max_pool_size: usize,
     default_buffer_size: usize,
 }
@@ -112,20 +114,18 @@ pub struct BufferPool {
 impl BufferPool {
     pub fn new(max_pool_size: usize, default_buffer_size: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Vec::with_capacity(max_pool_size))),
+            pool: Arc::new(SegQueue::new()),
             max_pool_size,
             default_buffer_size,
         }
     }
 
     pub fn get(&self, capacity: usize) -> PooledBytesMut {
-        let mut pool = self.inner.lock().unwrap();
+        let mut buffer = self.pool.pop().unwrap_or_else(|| {
+            BytesMut::with_capacity(std::cmp::max(capacity, self.default_buffer_size))
+        });
+
         let required_capacity = std::cmp::max(capacity, self.default_buffer_size);
-
-        let mut buffer = pool
-            .pop()
-            .unwrap_or_else(|| BytesMut::with_capacity(required_capacity));
-
         if buffer.capacity() < required_capacity {
             buffer.reserve(required_capacity - buffer.capacity());
         }
@@ -139,9 +139,8 @@ impl BufferPool {
     }
 
     fn release(&self, buffer: BytesMut) {
-        let mut pool = self.inner.lock().unwrap();
-        if pool.len() < self.max_pool_size {
-            pool.push(buffer);
+        if self.pool.len() < self.max_pool_size {
+            self.pool.push(buffer);
         }
     }
 }
@@ -172,13 +171,13 @@ impl DerefMut for PooledBytesMut {
     }
 }
 
-impl std::io::Write for PooledBytesMut {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl io::Write for PooledBytesMut {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.put_slice(buf);
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
