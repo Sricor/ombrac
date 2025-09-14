@@ -350,14 +350,18 @@ async fn main() -> io::Result<()> {
             let dev = tun_builder.build_async().expect("must create tun device");
 
             let tun_handle = tokio::spawn(async move {
+                use ombrac_client::endpoint::tun::fakedns::FakeDns;
+
                 Tun {
                     ombrac_client: client,
                     secret,
+                    fakedns: FakeDns::default().into(),
                 }
                 .run(dev.into_fd().unwrap(), async move {
                     let _ = tun_shutdown_rx.recv().await;
                 })
-                .await;
+                .await
+                .unwrap();
             });
             handles.push(tun_handle);
         }
