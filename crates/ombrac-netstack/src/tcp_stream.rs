@@ -60,17 +60,12 @@ impl tokio::io::AsyncRead for TcpStream {
 
         if read_buf.is_empty() {
             trace!("TcpStream::poll_read: recv buffer is empty, waiting for data");
-            // Register the waker to be notified when data is available
             self.handle.recv_waker.register(cx.waker());
-
             return std::task::Poll::Pending;
         }
 
-        buf.initialize_unfilled();
-        let recv_buf = unsafe {
-            std::mem::transmute::<&mut [std::mem::MaybeUninit<u8>], &mut [u8]>(buf.unfilled_mut())
-        };
-        let n = read_buf.dequeue_slice(recv_buf);
+        let unfilled_slice = buf.initialize_unfilled();
+        let n = read_buf.dequeue_slice(unfilled_slice);
         buf.advance(n);
 
         self.stack_notifier

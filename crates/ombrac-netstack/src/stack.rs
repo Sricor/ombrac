@@ -6,10 +6,10 @@ use bytes::Bytes;
 use smoltcp::wire::IpProtocol;
 use tokio::sync::mpsc;
 
-use crate::buffer::BufferPool;
-use crate::{Config, debug};
+use crate::debug;
 use crate::{
-    UdpSocket,
+    Config, UdpSocket,
+    buffer::BufferPool,
     packet::IpPacket,
     tcp_listener::{TcpListener, TcpStreamHandle},
 };

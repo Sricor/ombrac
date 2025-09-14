@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use smoltcp::wire::{Ipv4Address, Ipv6Address};
 
@@ -16,9 +16,9 @@ pub struct Config {
     pub buffer_pool_size: usize,
     pub default_buffer_size: usize,
 
-    pub ipv4_addr: IpAddr,
+    pub ipv4_addr: Ipv4Addr,
     pub ipv4_prefix_len: u8,
-    pub ipv6_addr: IpAddr,
+    pub ipv6_addr: Ipv6Addr,
     pub ipv6_prefix_len: u8,
 }
 
@@ -31,9 +31,9 @@ impl Default for Config {
             tcp_recv_buffer_size: 16 * 1024,
             buffer_pool_size: 128,
             default_buffer_size: 2 * 1024,
-            ipv4_addr: IpAddr::V4(Ipv4Addr::from(DEFAULT_IPV4_ADDR)),
+            ipv4_addr: Ipv4Addr::from(DEFAULT_IPV4_ADDR),
             ipv4_prefix_len: 24,
-            ipv6_addr: IpAddr::V6(Ipv6Addr::from(DEFAULT_IPV6_ADDR)),
+            ipv6_addr: Ipv6Addr::from(DEFAULT_IPV6_ADDR),
             ipv6_prefix_len: 64,
         }
     }
