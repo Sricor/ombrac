@@ -6,13 +6,13 @@ use bytes::Bytes;
 use smoltcp::wire::IpProtocol;
 use tokio::sync::mpsc;
 
-use crate::debug;
 use crate::{
     Config, UdpSocket,
     buffer::BufferPool,
     packet::IpPacket,
     tcp_listener::{TcpListener, TcpStreamHandle},
 };
+use crate::{debug, error};
 
 pub(crate) enum IfaceEvent<'a> {
     Icmp,
@@ -143,7 +143,7 @@ impl futures::Sink<Packet> for StackSplitSink {
         ) {
             self.packet_container.replace((item, protocol));
         } else {
-            debug!("tun IP packet ignored (protocol: {protocol:?})");
+            error!("IP packet ignored protocol: {protocol:?}");
         }
 
         Ok(())
@@ -162,7 +162,7 @@ impl futures::Sink<Packet> for StackSplitSink {
             IpProtocol::Udp => self.udp_inbound.clone(),
             IpProtocol::Tcp | IpProtocol::Icmp | IpProtocol::Icmpv6 => self.tcp_inbound.clone(),
             _ => {
-                debug!("Unsupported protocol for packet: {proto:?}");
+                error!("Unsupported protocol for packet: {proto:?}");
                 return Poll::Ready(Ok(()));
             }
         };
