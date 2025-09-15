@@ -332,7 +332,7 @@ pub mod fakedns {
     use dashmap::mapref::one::Ref;
     use tracing::debug;
 
-    const DEFAULT_DNS_ENTRY_TTL: Duration = Duration::from_secs(30);
+    const DEFAULT_DNS_ENTRY_TTL: Duration = Duration::from_secs(60);
 
     pub struct DnsEntry {
         pub domain: Bytes,
@@ -446,7 +446,7 @@ pub mod fakedns {
             response_bytes.extend_from_slice(&[0xc0, 0x0c]); // Pointer to domain name at offset 12
             response_bytes.extend_from_slice(&1u16.to_be_bytes()); // Type: A
             response_bytes.extend_from_slice(&1u16.to_be_bytes()); // Class: IN
-            response_bytes.extend_from_slice(&10u32.to_be_bytes()); // TTL: 10 seconds
+            response_bytes.extend_from_slice(&60u32.to_be_bytes()); // TTL: 60 seconds
             response_bytes.extend_from_slice(&4u16.to_be_bytes()); // Data length: 4 bytes for IPv4
             response_bytes.extend_from_slice(&fake_ip.octets()); // Fake IP address
 
