@@ -27,6 +27,7 @@ quic = [
 
 [dependencies]
 ombrac-macros = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "io-util", "macros"] }
 thiserror = { workspace = true }

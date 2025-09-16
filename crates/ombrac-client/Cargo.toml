@@ -13,6 +13,9 @@ readme = "../../README.md"
 name = "ombrac-client"
 path = "bin/main.rs"
 
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [features]
 default = [
     "tracing",
@@ -32,6 +35,10 @@ tracing = [
 
 endpoint-default = ["endpoint-socks"]
 endpoint-socks = ["socks-lib"]
+endpoint-tun = [
+    "ombrac-netstack",
+    "tun-rs"
+]
 endpoint-http = [
     "http", 
     "hyper", 
@@ -51,7 +58,10 @@ datagram = [
 ombrac = { workspace = true }
 ombrac-macros = { workspace = true }
 ombrac-transport = { workspace = true }
-ombrac-netstack = { workspace = true }
+ombrac-netstack = { workspace = true, optional = true }
+futures = { workspace = true }
+serde = { workspace = true }
+figment = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 blake3 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal"] }
@@ -65,28 +75,7 @@ http = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["client", "server", "http1"],optional = true }
 hyper-util = { workspace = true, features = ["tokio"], optional = true }
 http-body-util = { workspace = true, optional = true }
-
-rand = { workspace = true }
-smoltcp = { workspace = true, features = [
-    "std",
-    "log",
-    "medium-ip",
-    "proto-ipv4",
-    "proto-ipv6",
-    "socket-tcp",
-    "socket-udp",
-    "socket-icmp",
-    "async",
-    "socket-tcp-cubic",
-] }
-futures = { workspace = true }
-etherparse = { workspace = true, features = ["std"] }
-tun-rs = { workspace = true, features = ["async", "async_framed"] }
-ipnet = { workspace = true }
-socket2 = { workspace = true }
-libc = "0.2.175"
-tun = { workspace = true }
-dashmap = { workspace = true }
+tun-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

@@ -12,10 +12,11 @@ use std::{fs, io};
 
 use quinn::{IdleTimeout, VarInt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, error::Error>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Congestion {
     Bbr,
     Cubic,

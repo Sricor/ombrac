@@ -30,6 +30,8 @@ ombrac-macros = { version = "0.5.15", path = "crates/ombrac-macros", default-fea
 ombrac-transport = { version = "0.5.15", path = "crates/ombrac-transport", default-features = false }
 ombrac-netstack = { version = "0.5.15", path = "crates/ombrac-netstack", default-features = false }
 
+serde = { version = "1", default-features = false }
+figment = { version = "0.10", default-features = false }
 futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", default-features = false }
