@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 
 use ombrac::Secret;
 use ombrac::client::Client;
-use ombrac_macros::{error, info};
+use ombrac_macros::{error, info, warn};
 use ombrac_transport::Initiator;
 #[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::{
@@ -70,7 +70,7 @@ impl Service {
                 error!("A task failed to shut down cleanly: {:?}", e);
             }
         }
-        info!("Client session shut down complete.");
+        warn!("Service shutdown complete");
     }
 }
 
@@ -85,8 +85,8 @@ pub async fn run_from_cli(config: ServiceConfig) -> io::Result<()> {
 
 #[cfg(feature = "tracing")]
 fn setup_logging(config: &ServiceConfig) {
-    let log_level_str = config.logging.log_level.as_deref().unwrap_or("INFO");
-    let log_level: tracing::Level = log_level_str.parse().unwrap_or(tracing::Level::INFO);
+    let log_level_str = config.logging.log_level.as_deref().unwrap_or("WARN");
+    let log_level: tracing::Level = log_level_str.parse().unwrap_or(tracing::Level::WARN);
 
     let subscriber = tracing_subscriber::fmt()
         .with_thread_ids(true)

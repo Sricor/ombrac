@@ -73,7 +73,8 @@ pub struct TransportConfig {
         long,
         help_heading = "Transport",
         value_name = "PROTOCOLS",
-        value_delimiter = ','
+        value_delimiter = ',',
+        default_value = "h3",
     )]
     pub alpn_protocols: Option<Vec<Vec<u8>>>,
 
@@ -142,7 +143,7 @@ pub struct LoggingConfig {
         long,
         help_heading = "Logging",
         value_name = "LEVEL",
-        default_value = "WARN"
+        default_value = "INFO"
     )]
     pub log_level: Option<String>,
 
