@@ -66,7 +66,7 @@ impl Service {
         let _ = self.shutdown_tx.send(());
 
         for handle in self.handles {
-            if let Err(e) = handle.await {
+            if let Err(_e) = handle.await {
                 error!("A task failed to shut down cleanly: {:?}", e);
             }
         }

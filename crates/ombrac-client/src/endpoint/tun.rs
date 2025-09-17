@@ -62,7 +62,7 @@ impl<I: Initiator> Tun<I> {
                     tokio::select! {
                         biased;
                         _ = token.cancelled() => {
-                            info!("DNS cleanup task is shutting down.");
+                            debug!("DNS cleanup task is shutting down.");
                             break;
                         }
                         _ = interval.tick() => {
@@ -98,22 +98,18 @@ impl<I: Initiator> Tun<I> {
             ),
         ];
 
-        // Wait for the external shutdown signal.
         shutdown_signal.await;
-
-        info!("Shutdown signal received. Shutting down all tasks...");
         shutdown_token.cancel();
 
         // Wait for all main tasks to complete.
         for task in processing_tasks {
-            if let Err(e) = task.await {
-                error!("A processing task panicked during shutdown: {:?}", e);
+            if let Err(_err) = task.await {
+                error!("A processing task panicked during shutdown: {:?}", _err);
             }
         }
 
-        // The DNS cleanup task is long-running and can be safely aborted.
         dns_cleanup_handle.abort();
-        info!("TUN stack has shut down successfully.");
+        warn!("TUN stack has shutdown complete");
 
         Ok(())
     }
@@ -131,24 +127,23 @@ impl<I: Initiator> Tun<I> {
                 pkt_result = stack_stream.next() => {
                     match pkt_result {
                         Some(Ok(pkt)) => {
-                            if let Err(e) = tun_sink.send(pkt.into_bytes()).await {
-                                error!("Failed to send packet to TUN: {}. Stopping task.", e);
+                            if let Err(_err) = tun_sink.send(pkt.into_bytes()).await {
+                                error!("Failed to send packet to TUN: {}. Stopping task.", _err);
                                 break;
                             }
                         }
-                        Some(Err(e)) => {
-                            error!("Netstack read error: {}. Stopping task.", e);
+                        Some(Err(_err)) => {
+                            error!("Netstack read error: {}. Stopping task.", _err);
                             break;
                         }
                         None => {
-                            info!("Netstack stream closed. Stopping stack-to-TUN task.");
                             break;
                         }
                     }
                 }
             }
         }
-        info!("Stack-to-TUN task has finished.");
+        warn!("Stack-to-TUN task has finished.");
     }
 
     /// Task to process packets from the TUN device and send them to the network stack.
@@ -164,13 +159,13 @@ impl<I: Initiator> Tun<I> {
                 pkt_result = tun_stream.next() => {
                     match pkt_result {
                         Some(Ok(pkt)) => {
-                            if let Err(e) = stack_sink.send(Packet::new(pkt)).await {
-                                error!("Failed to send packet to stack: {}. Stopping task.", e);
+                            if let Err(_err) = stack_sink.send(Packet::new(pkt)).await {
+                                error!("Failed to send packet to stack: {}. Stopping task.", _err);
                                 break;
                             }
                         }
-                        Some(Err(e)) => {
-                            error!("TUN stream read error: {}. Stopping task.", e);
+                        Some(Err(_err)) => {
+                            error!("TUN stream read error: {}. Stopping task.", _err);
                             break;
                         }
                         None => {
@@ -181,7 +176,7 @@ impl<I: Initiator> Tun<I> {
                 }
             }
         }
-        info!("TUN-to-stack task has finished.");
+        warn!("TUN-to-stack task has finished.");
     }
 
     /// Task that listens for new TCP connections from the stack and spawns a handler for each.
@@ -197,28 +192,25 @@ impl<I: Initiator> Tun<I> {
                 stream_option = tcp_listener.next() => {
                     let stream = match stream_option {
                         Some(s) => s,
-                        None => {
-                            info!("TCP listener has closed. Stopping TCP processing.");
-                            break;
-                        }
+                        None => break
                     };
 
                     let self_clone = self.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = self_clone.handle_inbound_stream(stream).await {
-                            error!("Error handling TCP stream: {}", err);
+                        if let Err(_err) = self_clone.handle_inbound_stream(stream).await {
+                            error!("Error handling TCP stream: {}", _err);
                         }
                     });
                 }
             }
         }
-        info!("TCP connection processing task has finished.");
+        warn!("TCP connection processing task has finished.");
     }
 
     /// Task that processes all incoming UDP packets from the stack.
     async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
         self.handle_inbound_datagram(udp_socket, token).await;
-        info!("UDP packet processing task has finished.");
+        warn!("UDP packet processing task has finished.");
     }
 
     /// Handles a single TCP stream by forwarding it through the ombrac client.
@@ -330,7 +322,7 @@ pub mod fakedns {
     use bytes::Bytes;
     use dashmap::DashMap;
     use dashmap::mapref::one::Ref;
-    use tracing::debug;
+    use ombrac_macros::debug;
 
     const DEFAULT_DNS_ENTRY_TTL: Duration = Duration::from_secs(60);
 
