@@ -14,7 +14,7 @@ pub struct Config {
     pub tcp_recv_buffer_size: usize,
 
     pub buffer_pool_size: usize,
-    pub default_buffer_size: usize,
+    pub buffer_pool_default_buffer_size: usize,
 
     pub ipv4_addr: Ipv4Addr,
     pub ipv4_prefix_len: u8,
@@ -29,8 +29,8 @@ impl Default for Config {
             channel_size: 1024,
             tcp_send_buffer_size: 16 * 1024,
             tcp_recv_buffer_size: 16 * 1024,
-            buffer_pool_size: 128,
-            default_buffer_size: 2 * 1024,
+            buffer_pool_size: 32,
+            buffer_pool_default_buffer_size: 2 * 1024,
             ipv4_addr: DEFAULT_IPV4_ADDR,
             ipv4_prefix_len: 24,
             ipv6_addr: DEFAULT_IPV6_ADDR,

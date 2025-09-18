@@ -59,17 +59,15 @@ impl NetStack {
         let (tcp_inbound_app, tcp_outbound_stack) = mpsc::channel::<Packet>(config.channel_size);
         let buffer_pool = Arc::new(BufferPool::new(
             config.buffer_pool_size,
-            config.default_buffer_size,
+            config.buffer_pool_default_buffer_size,
         ));
 
-        let stack = NetStack {
-            udp_inbound: udp_inbound_app,
-            tcp_inbound: tcp_inbound_app,
-            packet_outbound: packet_receiver,
-        };
-
         (
-            stack,
+            NetStack {
+                udp_inbound: udp_inbound_app,
+                tcp_inbound: tcp_inbound_app,
+                packet_outbound: packet_receiver,
+            },
             TcpListener::new(
                 tcp_outbound_stack,
                 packet_sender.clone(),
