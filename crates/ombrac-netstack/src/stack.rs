@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
+use smoltcp::socket::tcp::Socket;
 use smoltcp::wire::IpProtocol;
 use tokio::sync::mpsc;
 
@@ -12,7 +13,7 @@ use crate::{debug, error};
 
 pub(crate) enum IfaceEvent<'a> {
     Icmp,
-    TcpStream(Box<(smoltcp::socket::tcp::Socket<'a>, SocketIOHandle)>),
+    TcpStream(Box<(Socket<'a>, SocketIOHandle)>),
     TcpSocketReady,
     TcpSocketClosed,
     DeviceReady,

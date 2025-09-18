@@ -6,6 +6,7 @@ use futures::task::AtomicWaker;
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
+use tokio::sync::mpsc::Sender;
 
 use crate::stack::IfaceEvent;
 
@@ -34,7 +35,7 @@ pub struct TcpStream {
     pub(crate) recv_buffer_cons: RbConsumer,
     pub(crate) send_buffer_prod: RbProducer,
     pub(crate) shared_state: Arc<SharedState>,
-    pub(crate) stack_notifier: tokio::sync::mpsc::Sender<IfaceEvent<'static>>,
+    pub(crate) stack_notifier: Sender<IfaceEvent<'static>>,
 }
 
 impl TcpStream {
