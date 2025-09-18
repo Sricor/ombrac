@@ -1,45 +1,29 @@
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+
 use futures::task::AtomicWaker;
+use ringbuf::HeapRb;
+use ringbuf::traits::{Consumer, Observer, Producer};
 use smoltcp::{
     iface::{Interface, SocketSet},
     socket::tcp,
     wire::{IpProtocol, TcpPacket},
 };
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
 use tokio::sync::mpsc;
 
+use crate::error;
 use crate::{
     Config, Packet,
-    buffer::{BufferPool, LockFreeRingBuffer},
+    buffer::BufferPool,
     device::NetstackDevice,
-    error,
     packet::IpPacket,
     stack::IfaceEvent,
-    tcp_stream::TcpStream,
+    tcp_stream::{RbConsumer, RbProducer, SharedState, TcpStream},
 };
 
-pub(crate) struct TcpStreamHandle {
-    pub(crate) recv_buffer: LockFreeRingBuffer,
-    pub(crate) send_buffer: LockFreeRingBuffer,
-    pub(crate) recv_waker: AtomicWaker,
-    pub(crate) send_waker: AtomicWaker,
-    pub(crate) socket_dropped: AtomicBool,
-}
-
-impl TcpStreamHandle {
-    pub fn new(recv_buffer_size: usize, send_buffer_size: usize) -> Self {
-        Self {
-            recv_waker: AtomicWaker::new(),
-            send_waker: AtomicWaker::new(),
-            recv_buffer: LockFreeRingBuffer::new(recv_buffer_size),
-            send_buffer: LockFreeRingBuffer::new(send_buffer_size),
-            socket_dropped: AtomicBool::new(false),
-        }
-    }
+pub(crate) struct SocketIOHandle {
+    recv_buffer_prod: RbProducer,
+    send_buffer_cons: RbConsumer,
+    shared_state: Arc<SharedState>,
 }
 
 pub struct TcpListener {
@@ -153,21 +137,37 @@ impl TcpListener {
             socket.set_congestion_control(tcp::CongestionControl::Cubic);
 
             if socket.listen(dst_addr).is_ok() {
-                let handle = Arc::new(TcpStreamHandle::new(
-                    config.tcp_recv_buffer_size,
-                    config.tcp_send_buffer_size,
-                ));
+                let recv_rb = Arc::new(HeapRb::<u8>::new(config.tcp_recv_buffer_size));
+                let (recv_prod, recv_cons) = (
+                    ringbuf::Prod::new(recv_rb.clone()),
+                    ringbuf::Cons::new(recv_rb),
+                );
 
+                let send_rb = Arc::new(HeapRb::<u8>::new(config.tcp_send_buffer_size));
+                let (send_prod, send_cons) = (
+                    ringbuf::Prod::new(send_rb.clone()),
+                    ringbuf::Cons::new(send_rb),
+                );
+
+                let shared_state = Arc::new(SharedState::new());
                 let stream = TcpStream {
                     local_addr: src_addr,
                     remote_addr: dst_addr,
-                    handle: handle.clone(),
+                    recv_buffer_cons: recv_cons,
+                    send_buffer_prod: send_prod,
+                    shared_state: shared_state.clone(),
                     stack_notifier: iface_notifier.clone(),
+                };
+
+                let io_handle = SocketIOHandle {
+                    recv_buffer_prod: recv_prod,
+                    send_buffer_cons: send_cons,
+                    shared_state,
                 };
 
                 if tcp_stream_emitter.try_send(stream).is_ok()
                     && iface_notifier
-                        .send(IfaceEvent::TcpStream(Box::new((socket, handle))))
+                        .send(IfaceEvent::TcpStream(Box::new((socket, io_handle))))
                         .await
                         .is_ok()
                 {
@@ -222,44 +222,47 @@ impl TcpListener {
         Ok(())
     }
 
-    fn handle_socket_io(socket: &mut tcp::Socket, socket_control: &Arc<TcpStreamHandle>) {
-        let recv_buf = &socket_control.recv_buffer;
+    fn handle_socket_io(socket: &mut tcp::Socket, socket_control: &mut SocketIOHandle) {
         let mut notify_read = false;
-        while socket.can_recv() && !recv_buf.is_full() {
-            if let Ok(n) = socket.recv(|buffer| (recv_buf.enqueue_slice(buffer), buffer.len())) {
-                if n > 0 {
-                    notify_read = true;
-                }
-            } else {
-                break;
+        while socket.can_recv() && !socket_control.recv_buffer_prod.is_full() {
+            match socket.recv(|buffer| {
+                (
+                    socket_control.recv_buffer_prod.push_slice(buffer),
+                    buffer.len(),
+                )
+            }) {
+                Ok(n) if n > 0 => notify_read = true,
+                _ => break,
             }
         }
         if notify_read {
-            socket_control.recv_waker.wake();
+            socket_control.shared_state.recv_waker.wake();
         }
 
-        let send_buf = &socket_control.send_buffer;
         let mut notify_write = false;
-        while socket.can_send() && !send_buf.is_empty() {
-            if let Ok(n) = socket.send(|buffer| (send_buf.dequeue_slice(buffer), buffer.len())) {
-                if n > 0 {
-                    notify_write = true;
-                }
-            } else {
-                break;
+        while socket.can_send() && !socket_control.send_buffer_cons.is_empty() {
+            match socket.send(|buffer| {
+                (
+                    socket_control.send_buffer_cons.pop_slice(buffer),
+                    buffer.len(),
+                )
+            }) {
+                Ok(n) if n > 0 => notify_write = true,
+                _ => break,
             }
         }
         if notify_write {
-            socket_control.send_waker.wake();
+            socket_control.shared_state.send_waker.wake();
         }
     }
 
     fn prune_sockets(
         sockets: &mut SocketSet,
-        socket_maps: &mut HashMap<smoltcp::iface::SocketHandle, Arc<TcpStreamHandle>>,
+        socket_maps: &mut HashMap<smoltcp::iface::SocketHandle, SocketIOHandle>,
     ) {
         socket_maps.retain(|handle, socket_control| {
             if socket_control
+                .shared_state
                 .socket_dropped
                 .load(std::sync::atomic::Ordering::Acquire)
             {
@@ -281,22 +284,22 @@ impl TcpListener {
         mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
         let mut sockets = SocketSet::new(vec![]);
-        let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, Arc<TcpStreamHandle>> =
-            HashMap::new();
+        let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, SocketIOHandle> = HashMap::new();
 
         loop {
             let now = smoltcp::time::Instant::now();
             let delay = iface
                 .poll_delay(now, &sockets)
-                .unwrap_or(smoltcp::time::Duration::ZERO)
-                .into();
+                .map(|d| d.into())
+                .unwrap_or(Duration::ZERO);
 
             tokio::select! {
                 biased;
                 Some(event) = notifier_rx.recv() => {
                     if let IfaceEvent::TcpStream(stream) = event {
-                        let socket_handle = sockets.add(stream.0);
-                        socket_maps.insert(socket_handle, stream.1);
+                        let (socket, handle) = *stream;
+                        let socket_handle = sockets.add(socket);
+                        socket_maps.insert(socket_handle, handle);
                     }
                 }
                 _ = tokio::time::sleep(delay) => {}
@@ -305,7 +308,7 @@ impl TcpListener {
             let now = smoltcp::time::Instant::now();
             iface.poll(now, device, &mut sockets);
 
-            for (socket_handle, socket_control) in socket_maps.iter() {
+            for (socket_handle, socket_control) in socket_maps.iter_mut() {
                 let socket = sockets.get_mut::<tcp::Socket>(*socket_handle);
                 Self::handle_socket_io(socket, socket_control);
             }

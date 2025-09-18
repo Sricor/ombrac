@@ -33,6 +33,7 @@ smoltcp = { workspace = true, features = [
     "socket-tcp-cubic",
 ] }
 etherparse = { workspace = true, features = ["std"] }
+ringbuf = { workspace = true, features = ["std"] }
 crossbeam-queue = { workspace = true, features = ["alloc"] }
 
 [lints]

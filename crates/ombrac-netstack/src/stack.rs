@@ -6,17 +6,13 @@ use bytes::Bytes;
 use smoltcp::wire::IpProtocol;
 use tokio::sync::mpsc;
 
-use crate::{
-    Config, UdpSocket,
-    buffer::BufferPool,
-    packet::IpPacket,
-    tcp_listener::{TcpListener, TcpStreamHandle},
-};
+use crate::tcp_listener::SocketIOHandle;
+use crate::{Config, UdpSocket, buffer::BufferPool, packet::IpPacket, tcp_listener::TcpListener};
 use crate::{debug, error};
 
 pub(crate) enum IfaceEvent<'a> {
     Icmp,
-    TcpStream(Box<(smoltcp::socket::tcp::Socket<'a>, Arc<TcpStreamHandle>)>),
+    TcpStream(Box<(smoltcp::socket::tcp::Socket<'a>, SocketIOHandle)>),
     TcpSocketReady,
     TcpSocketClosed,
     DeviceReady,

@@ -1,15 +1,39 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::task::{Context, Poll};
 
+use futures::task::AtomicWaker;
+use ringbuf::HeapRb;
+use ringbuf::traits::{Consumer, Observer, Producer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
-use crate::{stack::IfaceEvent, tcp_listener::TcpStreamHandle};
+use crate::stack::IfaceEvent;
+
+pub(crate) type RbProducer = ringbuf::Prod<Arc<HeapRb<u8>>>;
+pub(crate) type RbConsumer = ringbuf::Cons<Arc<HeapRb<u8>>>;
+
+pub(crate) struct SharedState {
+    pub(crate) recv_waker: AtomicWaker,
+    pub(crate) send_waker: AtomicWaker,
+    pub(crate) socket_dropped: AtomicBool,
+}
+
+impl SharedState {
+    pub fn new() -> Self {
+        Self {
+            recv_waker: AtomicWaker::new(),
+            send_waker: AtomicWaker::new(),
+            socket_dropped: AtomicBool::new(false),
+        }
+    }
+}
 
 pub struct TcpStream {
     pub(crate) local_addr: SocketAddr,
     pub(crate) remote_addr: SocketAddr,
-    pub(crate) handle: Arc<TcpStreamHandle>,
+    pub(crate) recv_buffer_cons: RbConsumer,
+    pub(crate) send_buffer_prod: RbProducer,
+    pub(crate) shared_state: Arc<SharedState>,
     pub(crate) stack_notifier: tokio::sync::mpsc::Sender<IfaceEvent<'static>>,
 }
 
@@ -29,19 +53,17 @@ impl TcpStream {
 
 impl AsyncRead for TcpStream {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let read_buf = &self.handle.recv_buffer;
-
-        if read_buf.is_empty() {
-            self.handle.recv_waker.register(cx.waker());
+        if self.recv_buffer_cons.is_empty() {
+            self.shared_state.recv_waker.register(cx.waker());
             return Poll::Pending;
         }
 
         let unfilled_slice = buf.initialize_unfilled();
-        let n = read_buf.dequeue_slice(unfilled_slice);
+        let n = self.recv_buffer_cons.pop_slice(unfilled_slice);
         buf.advance(n);
 
         let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
@@ -52,19 +74,17 @@ impl AsyncRead for TcpStream {
 
 impl AsyncWrite for TcpStream {
     fn poll_write(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        let send_buf = &self.handle.send_buffer;
-
-        if send_buf.is_full() {
-            self.handle.send_waker.register(cx.waker());
+        if self.send_buffer_prod.is_full() {
+            self.shared_state.send_waker.register(cx.waker());
             let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
             return Poll::Pending;
         }
 
-        let n = send_buf.enqueue_slice(buf);
+        let n = self.send_buffer_prod.push_slice(buf);
         let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
 
         Poll::Ready(Ok(n))
@@ -89,7 +109,7 @@ impl AsyncWrite for TcpStream {
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        self.handle
+        self.shared_state
             .socket_dropped
             .store(true, std::sync::atomic::Ordering::Release);
 

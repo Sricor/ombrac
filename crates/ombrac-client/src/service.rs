@@ -300,56 +300,52 @@ async fn quic_client_from_config(config: &ServiceConfig) -> io::Result<QuicClien
     Ok(QuicClient::new(quic_config, socket).await?)
 }
 
-
-
 // Destination        Gateway            Flags               Netif Expire
-// default            192.168.31.1       UGScg                 en0       
-// 127.0.0.1          127.0.0.1          UH                    lo0       
+// default            192.168.31.1       UGScg                 en0
+// 127.0.0.1          127.0.0.1          UH                    lo0
 // 192.168.31         link#6             UCS                   en0      !
 // 192.168.31.1/32    link#6             UCS                   en0      !
 // 192.168.31.1       a4:a9:30:9c:a8:4f  UHLWIir               en0   1173
 // 192.168.31.3/32    link#6             UCS                   en0      !
-// 192.168.31.3       5c:1b:f4:8f:86:21  UHLWI                 lo0       
+// 192.168.31.3       5c:1b:f4:8f:86:21  UHLWI                 lo0
 // 192.168.31.5       14:7f:ce:a1:92:20  UHLWIi                en0   1177
 // 192.168.31.89      4a:35:a2:8e:65:1a  UHLWIi                en0   1186
-// 198.19.0           198.19.0.1         UGSc                  en0       
-// 198.19.0.255       198.19.0.1         UH                  utun8       
+// 198.19.0           198.19.0.1         UGSc                  en0
+// 198.19.0.255       198.19.0.1         UH                  utun8
 // 224.0.0/4          link#6             UmCS                  en0      !
-// 224.0.0.251        1:0:5e:0:0:fb      UHmLWI                en0       
-// 227.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 228.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 229.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 230.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 232.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
+// 224.0.0.251        1:0:5e:0:0:fb      UHmLWI                en0
+// 227.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 228.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 229.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 230.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 232.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
 // 255.255.255.255/32 link#6             UCS                   en0      !
 
-
-
 // Destination        Gateway            Flags               Netif Expire
-// 0/1                198.19.0.1         UGScg               utun8       
-// default            192.168.31.1       UGScg                 en0       
-// 3.0.223.235/32     192.168.31.1       UGSc                  en0       
-// 10                 192.168.31.1       UGSc                  en0       
-// 127                192.168.31.1       UGSc                  en0       
-// 127.0.0.1          127.0.0.1          UH                    lo0       
-// 128.0/1            198.19.0.1         UGSc                utun8       
-// 169.254            192.168.31.1       UGSc                  en0       
-// 172.16/12          192.168.31.1       UGSc                  en0       
-// 192.168.0/16       192.168.31.1       UGSc                  en0       
+// 0/1                198.19.0.1         UGScg               utun8
+// default            192.168.31.1       UGScg                 en0
+// 3.0.223.235/32     192.168.31.1       UGSc                  en0
+// 10                 192.168.31.1       UGSc                  en0
+// 127                192.168.31.1       UGSc                  en0
+// 127.0.0.1          127.0.0.1          UH                    lo0
+// 128.0/1            198.19.0.1         UGSc                utun8
+// 169.254            192.168.31.1       UGSc                  en0
+// 172.16/12          192.168.31.1       UGSc                  en0
+// 192.168.0/16       192.168.31.1       UGSc                  en0
 // 192.168.31         link#6             UCS                   en0      !
 // 192.168.31.1/32    link#6             UCS                   en0      !
 // 192.168.31.1       a4:a9:30:9c:a8:4f  UHLWIir               en0   1163
 // 192.168.31.3/32    link#6             UCS                   en0      !
-// 192.168.31.3       5c:1b:f4:8f:86:21  UHLWIi                lo0       
+// 192.168.31.3       5c:1b:f4:8f:86:21  UHLWIi                lo0
 // 192.168.31.5       14:7f:ce:a1:92:20  UHLWIi                en0   1130
 // 192.168.31.89      4a:35:a2:8e:65:1a  UHLWIi                en0   1139
-// 198.19.0           198.19.0.1         UGSc                  en0       
-// 198.19.0.255       198.19.0.1         UH                  utun8       
+// 198.19.0           198.19.0.1         UGSc                  en0
+// 198.19.0.255       198.19.0.1         UH                  utun8
 // 224.0.0/4          link#6             UmCS                  en0      !
-// 224.0.0.251        1:0:5e:0:0:fb      UHmLWI                en0       
-// 227.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 228.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 229.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 230.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
-// 232.18.0.0         1:0:5e:12:0:0      UHmLWI                en0       
+// 224.0.0.251        1:0:5e:0:0:fb      UHmLWI                en0
+// 227.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 228.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 229.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 230.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
+// 232.18.0.0         1:0:5e:12:0:0      UHmLWI                en0
 // 255.255.255.255/32 link#6             UCS                   en0      !
