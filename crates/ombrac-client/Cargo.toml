@@ -12,15 +12,7 @@ readme = "../../README.md"
 [[bin]]
 name = "ombrac-client"
 path = "bin/main.rs"
-features = [
-    "tracing",
-    "datagram",
-
-    "transport-quic",
-    "endpoint-socks",
-    "endpoint-http",
-    "endpoint-tun"
-]
+required-features = ["binary"]
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -28,9 +20,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = [
     "datagram",
-
     "endpoint-default",
     "transport-default",
+]
+
+binary = [
+    "tracing",
+    "datagram",
+    "transport-quic",
+    "endpoint-socks",
+    "endpoint-http",
+    "endpoint-tun"
 ]
 
 tracing = [
@@ -45,6 +45,7 @@ endpoint-default = ["endpoint-socks"]
 endpoint-socks = ["socks-lib"]
 endpoint-tun = [
     "ombrac-netstack",
+    "ipnet",
     "tun-rs",
     "dashmap"
 ]
@@ -81,9 +82,10 @@ tracing-appender = { workspace = true, optional = true}
 tracing-subscriber = { workspace = true, features = ["ansi"], optional = true }
 socks-lib = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-hyper = { workspace = true, features = ["client", "server", "http1"],optional = true }
+hyper = { workspace = true, features = ["client", "server", "http1"], optional = true }
 hyper-util = { workspace = true, features = ["tokio"], optional = true }
 http-body-util = { workspace = true, optional = true }
+ipnet = { workspace = true, features = ["json"], optional = true }
 tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optional = true }
 dashmap = { workspace = true, optional = true }
 

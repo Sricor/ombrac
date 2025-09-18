@@ -21,12 +21,20 @@ use tun_rs::{
 };
 
 pub struct Tun<I: Initiator> {
-    pub ombrac_client: Arc<Client<I>>,
-    pub fakedns: Arc<fakedns::FakeDns>,
-    pub secret: Secret,
+    secret: Secret,
+    client: Arc<Client<I>>,
+    fakedns: Arc<fakedns::FakeDns>,
 }
 
 impl<I: Initiator> Tun<I> {
+    pub fn new(client: Arc<Client<I>>, secret: Secret, fakedns: Arc<fakedns::FakeDns>) -> Self {
+        Self {
+            client,
+            secret,
+            fakedns,
+        }
+    }
+
     /// Runs the main event loop for the TUN device, handling all network traffic.
     ///
     /// This function sets up the networking stack, spawns tasks to handle data flow
@@ -227,7 +235,7 @@ impl<I: Initiator> Tun<I> {
         };
 
         let mut remote_stream = self
-            .ombrac_client
+            .client
             .connect(target_addr.clone(), self.secret)
             .await?;
 
@@ -307,7 +315,7 @@ impl<I: Initiator> Tun<I> {
 impl<I: Initiator> Clone for Tun<I> {
     fn clone(&self) -> Self {
         Self {
-            ombrac_client: self.ombrac_client.clone(),
+            client: self.client.clone(),
             fakedns: self.fakedns.clone(),
             secret: self.secret,
         }

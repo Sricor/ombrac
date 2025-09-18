@@ -144,7 +144,7 @@ impl Server {
         ));
 
         Ok(Self {
-            endpoint,   
+            endpoint,
             stream_receiver,
             datagram_receiver,
             shutdown_sender,

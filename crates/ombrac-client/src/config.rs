@@ -12,24 +12,59 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::Congestion;
 
-#[cfg(feature = "transport-quic")]
-#[derive(ValueEnum, Clone, Debug, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TlsMode {
-    Tls,
-    MTls,
-    Insecure,
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None, styles = styles())]
+pub struct Args {
+    #[clap(
+        long,
+        short = 'c',
+        value_name = "FILE",
+        help = "Path to the JSON configuration file"
+    )]
+    pub config: Option<PathBuf>,
+    #[clap(
+        long,
+        short = 'k',
+        help_heading = "Required",
+        value_name = "STR",
+        required_unless_present = "config",
+        help = "Protocol Secret"
+    )]
+    pub secret: Option<String>,
+    #[clap(
+        long,
+        short = 's',
+        help_heading = "Required",
+        value_name = "ADDR",
+        required_unless_present = "config",
+        help = "Address of the server to connect to"
+    )]
+    pub server: Option<String>,
+    #[clap(flatten)]
+    pub endpoint: EndpointConfig,
+    #[cfg(feature = "transport-quic")]
+    #[clap(flatten)]
+    pub transport: TransportConfig,
+    #[cfg(feature = "tracing")]
+    #[clap(flatten)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Parser, Clone)]
 pub struct EndpointConfig {
     /// The address to bind for the HTTP/HTTPS server
+    #[cfg(feature = "endpoint-http")]
     #[clap(long, value_name = "ADDR", help_heading = "Endpoint")]
     pub http: Option<SocketAddr>,
 
     /// The address to bind for the SOCKS server
+    #[cfg(feature = "endpoint-socks")]
     #[clap(long, value_name = "ADDR", help_heading = "Endpoint")]
     pub socks: Option<SocketAddr>,
+
+    #[cfg(feature = "endpoint-tun")]
+    #[clap(flatten)]
+    pub tun: Option<TunConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Parser, Clone)]
@@ -74,7 +109,7 @@ pub struct TransportConfig {
         help_heading = "Transport",
         value_name = "PROTOCOLS",
         value_delimiter = ',',
-        default_value = "h3",
+        default_value = "h3"
     )]
     pub alpn_protocols: Option<Vec<Vec<u8>>>,
 
@@ -172,42 +207,43 @@ pub struct ConfigFile {
     pub logging: LoggingConfig,
 }
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None, styles = styles())]
-pub struct Args {
+#[cfg(feature = "transport-quic")]
+#[derive(ValueEnum, Clone, Debug, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode {
+    Tls,
+    MTls,
+    Insecure,
+}
+
+#[cfg(feature = "endpoint-tun")]
+#[derive(Deserialize, Serialize, Debug, Parser, Clone)]
+pub struct TunConfig {
+    /// The IPv4 address and subnet for the TUN device, in CIDR notation (e.g., 10.0.0.1/24).
+    #[clap(long, help_heading = "Endpoint", value_name = "CIDR")]
+    pub tun_ipv4: Option<ipnet::Ipv4Net>,
+
+    /// The IPv6 address and subnet for the TUN device, in CIDR notation (e.g., fd00::1/64).
+    #[clap(long, help_heading = "Endpoint", value_name = "CIDR")]
+    pub tun_ipv6: Option<ipnet::Ipv6Net>,
+
+    /// The Maximum Transmission Unit (MTU) for the TUN device.
     #[clap(
         long,
-        short = 'c',
-        value_name = "FILE",
-        help = "Path to the JSON configuration file"
+        help_heading = "Endpoint",
+        value_name = "MTU",
+        default_value = "1500"
     )]
-    pub config: Option<PathBuf>,
+    pub tun_mtu: u16,
+
+    /// The IPv4 address pool for the built-in fake DNS server, in CIDR notation.
     #[clap(
         long,
-        short = 'k',
-        help_heading = "Required",
-        value_name = "STR",
-        required_unless_present = "config",
-        help = "Protocol Secret"
+        help_heading = "Endpoint",
+        value_name = "CIDR",
+        default_value = "198.18.0.0/16"
     )]
-    pub secret: Option<String>,
-    #[clap(
-        long,
-        short = 's',
-        help_heading = "Required",
-        value_name = "ADDR",
-        required_unless_present = "config",
-        help = "Address of the server to connect to"
-    )]
-    pub server: Option<String>,
-    #[clap(flatten)]
-    pub endpoint: EndpointConfig,
-    #[cfg(feature = "transport-quic")]
-    #[clap(flatten)]
-    pub transport: TransportConfig,
-    #[cfg(feature = "tracing")]
-    #[clap(flatten)]
-    pub logging: LoggingConfig,
+    pub dns_pool: ipnet::Ipv4Net,
 }
 
 #[derive(Debug, Clone)]
