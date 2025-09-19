@@ -1,7 +1,5 @@
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    time::Duration,
-};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 
 use smoltcp::wire::{Ipv4Address, Ipv6Address};
 
