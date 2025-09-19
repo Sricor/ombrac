@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    time::Duration,
+};
 
 use smoltcp::wire::{Ipv4Address, Ipv6Address};
 
@@ -20,6 +23,12 @@ pub struct Config {
     pub ipv4_prefix_len: u8,
     pub ipv6_addr: Ipv6Addr,
     pub ipv6_prefix_len: u8,
+
+    pub tcp_keep_alive: Duration,
+    pub tcp_timeout: Duration,
+    pub tcp_ack_delay: Duration,
+    pub packet_batch_size: usize,
+    pub ip_ttl: u8,
 }
 
 impl Default for Config {
@@ -35,6 +44,12 @@ impl Default for Config {
             ipv4_prefix_len: 24,
             ipv6_addr: DEFAULT_IPV6_ADDR,
             ipv6_prefix_len: 64,
+
+            tcp_timeout: Duration::from_secs(60),
+            tcp_keep_alive: Duration::from_secs(28),
+            tcp_ack_delay: Duration::from_millis(10),
+            packet_batch_size: 32,
+            ip_ttl: 64,
         }
     }
 }

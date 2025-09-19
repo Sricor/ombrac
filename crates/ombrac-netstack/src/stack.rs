@@ -69,12 +69,13 @@ impl NetStack {
                 packet_outbound: packet_receiver,
             },
             TcpListener::new(
+                config.clone(),
                 tcp_outbound_stack,
                 packet_sender.clone(),
                 buffer_pool.clone(),
-                config,
             ),
             UdpSocket::new(
+                config,
                 udp_outbound_stack,
                 packet_sender.clone(),
                 buffer_pool.clone(),

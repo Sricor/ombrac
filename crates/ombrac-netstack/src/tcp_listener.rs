@@ -1,4 +1,7 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use futures::task::AtomicWaker;
 use ringbuf::HeapRb;
@@ -28,7 +31,6 @@ pub(crate) struct SocketIOHandle {
 
 pub struct TcpListener {
     socket_stream: mpsc::Receiver<TcpStream>,
-    socket_stream_waker: Arc<AtomicWaker>,
     task_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -40,10 +42,10 @@ impl Drop for TcpListener {
 
 impl TcpListener {
     pub fn new(
+        config: Config,
         inbound: mpsc::Receiver<Packet>,
         outbound: mpsc::Sender<Packet>,
         buffer_pool: Arc<BufferPool>,
-        config: Config,
     ) -> Self {
         let (iface_notifier, iface_notifier_rx) = mpsc::channel(config.channel_size);
         let mut device =
@@ -65,7 +67,6 @@ impl TcpListener {
         TcpListener {
             socket_stream,
             task_handle,
-            socket_stream_waker,
         }
     }
 
@@ -100,12 +101,12 @@ impl TcpListener {
     }
 
     async fn process_inbound_frame(
+        config: &Config,
         frame: Packet,
         device_injector: &mpsc::Sender<Packet>,
         iface_notifier: &mpsc::Sender<IfaceEvent<'static>>,
         tcp_stream_emitter: &mpsc::Sender<TcpStream>,
         tcp_stream_waker: &Arc<AtomicWaker>,
-        config: &Config,
     ) -> std::io::Result<()> {
         let packet = IpPacket::new_checked(frame.data()).map_err(std::io::Error::other)?;
 
@@ -128,11 +129,9 @@ impl TcpListener {
                 tcp::SocketBuffer::new(vec![0u8; config.tcp_send_buffer_size]),
             );
 
-            socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(28)));
-            socket.set_timeout(Some(smoltcp::time::Duration::from_secs(
-                if cfg!(target_os = "linux") { 7200 } else { 60 },
-            )));
-            socket.set_ack_delay(Some(Duration::from_millis(10).into()));
+            socket.set_keep_alive(Some(config.tcp_keep_alive.into()));
+            socket.set_timeout(Some(config.tcp_timeout.into()));
+            socket.set_ack_delay(Some(config.tcp_ack_delay.into()));
             socket.set_nagle_enabled(false);
             socket.set_congestion_control(tcp::CongestionControl::Cubic);
 
@@ -191,22 +190,24 @@ impl TcpListener {
         tcp_stream_waker: Arc<AtomicWaker>,
         config: &Config,
     ) -> std::io::Result<()> {
-        let mut packet_buf = Vec::with_capacity(32);
+        let mut packet_buf = Vec::with_capacity(config.packet_batch_size);
 
         loop {
-            let n = inbound.recv_many(&mut packet_buf, 32).await;
+            let n = inbound
+                .recv_many(&mut packet_buf, config.packet_batch_size)
+                .await;
             if n == 0 {
                 break;
             }
 
             for frame in packet_buf.drain(..) {
                 if let Err(_err) = Self::process_inbound_frame(
+                    config,
                     frame,
                     &device_injector,
                     &iface_notifier,
                     &tcp_stream_emitter,
                     &tcp_stream_waker,
-                    config,
                 )
                 .await
                 {
@@ -325,13 +326,6 @@ impl futures::Stream for TcpListener {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        match self.socket_stream.try_recv() {
-            Ok(stream) => std::task::Poll::Ready(Some(stream)),
-            Err(mpsc::error::TryRecvError::Empty) => {
-                self.socket_stream_waker.register(cx.waker());
-                std::task::Poll::Pending
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => std::task::Poll::Ready(None),
-        }
+        self.socket_stream.poll_recv(cx)
     }
 }
