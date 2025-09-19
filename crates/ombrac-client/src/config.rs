@@ -257,7 +257,7 @@ pub struct ServiceConfig {
     pub logging: LoggingConfig,
 }
 
-pub fn load() -> Result<ServiceConfig, figment::Error> {
+pub fn load() -> Result<ServiceConfig, Box<figment::Error>> {
     let args = Args::parse();
 
     let mut figment = Figment::new();
@@ -268,7 +268,7 @@ pub fn load() -> Result<ServiceConfig, figment::Error> {
                 io::ErrorKind::NotFound,
                 format!("Configuration file not found: {}", config_path.display()),
             );
-            return Err(figment::Error::from(err.to_string()));
+            return Err(Box::new(figment::Error::from(err.to_string())));
         }
 
         figment = figment.merge(Json::file(config_path));
