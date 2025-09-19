@@ -87,10 +87,7 @@ impl AsyncWrite for TcpStream {
 
         let n = self.send_buffer_prod.push_slice(buf);
         if n > 0 {
-            match self
-                .stack_notifier
-                .blocking_send(IfaceEvent::TcpSocketReady)
-            {
+            match self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
                 Ok(()) => {}
                 Err(_) => {
                     return Poll::Ready(Err(std::io::Error::new(
@@ -108,10 +105,7 @@ impl AsyncWrite for TcpStream {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        match self
-            .stack_notifier
-            .blocking_send(IfaceEvent::TcpSocketReady)
-        {
+        match self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(_) => Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
