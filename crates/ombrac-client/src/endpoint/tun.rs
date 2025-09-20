@@ -369,8 +369,10 @@ impl<I: Initiator> Tun<I> {
                     info!("Send {} to target {} ", data.len(), target_addr);
 
                     last_activity = Instant::now();
-                    if let Err(e) = remote_writer.send(Associate::with(secret, target_addr.clone(), data)).await {
-                        error!("Failed to send UDP packet to remote target {}: {}", target_addr, e);
+                    let data = Associate::with(secret, target_addr.clone(), data);
+                    let len = data.clone().to_bytes().unwrap().len();
+                    if let Err(e) = remote_writer.send(data).await {
+                        error!("Failed to send UDP packet to remote target {}: {}, len: {}", target_addr, e, len);
                         break;
                     }
                 }
@@ -380,7 +382,7 @@ impl<I: Initiator> Tun<I> {
                         Ok(data) => {
                             last_activity = Instant::now();
                             let response_packet = UdpPacket {
-                                data: Packet::new(data.to_bytes()?),
+                                data: Packet::new(data.data),
                                 local_addr: remote_addr,
                                 remote_addr: local_addr,
                             };
