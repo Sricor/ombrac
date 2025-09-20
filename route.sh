@@ -8,6 +8,8 @@ function do_route() {
     local tun_addr="${2:-$DEFAULT_TUN_ADDR}"
     local tun_dest="${3:-$DEFAULT_TUN_DEST}"
 
+    sudo route ${route_op} -host 192.168.31.5 192.168.31.1
+
     sudo route ${route_op} -net 1.0.0.0/8 ${tun_dest}
     sudo route ${route_op} -net 2.0.0.0/7 ${tun_dest}
     sudo route ${route_op} -net 4.0.0.0/6 ${tun_dest}

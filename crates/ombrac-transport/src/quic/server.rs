@@ -253,6 +253,7 @@ async fn handle_full_cone_proxy(conn: Arc<quinn::Connection>) {
             match fwd_conn.read_datagram().await {
                 Ok(datagram) => {
                     if let Some((dest_addr, payload)) = decode_addr(&datagram) {
+                        info!("Server Read Datagram dest: {}, playload: {}", dest_addr, payload.len());
                         if let Err(e) = fwd_socket.send_to(payload, dest_addr).await {
                             warn!("Failed to send UDP packet to {}: {}", dest_addr, e);
                         }
@@ -282,6 +283,8 @@ async fn handle_full_cone_proxy(conn: Arc<quinn::Connection>) {
                     let payload = &buf[..len];
                     let mut response_datagram = encode_addr(&source_addr);
                     response_datagram.extend_from_slice(payload);
+
+                    info!("Server Send Datagram dest: {}, playload: {}", source_addr, payload.len());
 
                     if let Err(e) = bwd_conn.send_datagram(response_datagram.into()) {
                         debug!("Failed to send QUIC datagram (connection closing?): {}", e);

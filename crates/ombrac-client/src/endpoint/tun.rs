@@ -314,7 +314,7 @@ impl<T: Transport> Tun<T> {
                                 // 在 NAT 表中查找此数据包应该发往哪个 TUN 内部地址
                                 if let Some(mut entry) = nat_table.get_mut(&source_addr) {
                                     let dest_addr = entry.value().0;
-                                    
+
                                     // 构造要注入 netstack 的数据包
                                     let response_packet = UdpPacket {
                                         data: Packet::new(data),
