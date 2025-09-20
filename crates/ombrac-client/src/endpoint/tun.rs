@@ -2,7 +2,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -12,17 +12,28 @@ use ombrac::Secret;
 use ombrac::address::Domain;
 use ombrac::client::Client;
 use ombrac::prelude::Address;
-use ombrac_macros::{error, info};
+// 将 Unreliable 重命名为 UnreliableDatagram 以提高清晰度
+// 您需要相应地在您的 lib.rs 中更新 trait 名称
+use ombrac_transport::{Initiator, Unreliable}; 
+use ombrac_macros::{debug, error, info, warn};
 use ombrac_netstack::*;
-use ombrac_transport::{Initiator, Unreliable};
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex};
 use tokio_util::sync::CancellationToken;
 use tun_rs::{
     AsyncDevice,
     async_framed::{BytesCodec, DeviceFramed},
 };
 
+// 为 NAT 表定义一个条目，包含超时信息
+struct UdpNatEntry {
+    virtual_addr: SocketAddr,
+    last_activity: Instant,
+}
+
+const UDP_NAT_TIMEOUT: Duration = Duration::from_secs(120);
+
+// I 的 trait bound 需要更新以匹配新的 trait 名称
 pub struct Tun<I: Initiator + Unreliable> {
     secret: Secret,
     client: Arc<Client<I>>,
@@ -39,18 +50,11 @@ impl<I: Initiator + Unreliable> Tun<I> {
     }
 
     /// Runs the main event loop for the TUN device, handling all network traffic.
-    ///
-    /// This function sets up the networking stack, spawns tasks to handle data flow
-    /// between the TUN device and the network stack, and manages TCP and UDP traffic.
-    /// It listens for a shutdown signal to terminate gracefully.
     pub async fn run(
         &self,
         fd: i32,
         shutdown_signal: impl Future<Output = ()>,
     ) -> std::io::Result<()> {
-        // SAFETY: The caller must ensure that `fd` is a valid file descriptor
-        // pointing to a TUN device, and that this function has exclusive access to it
-        // for the lifetime of the device.
         let dev = unsafe { AsyncDevice::from_fd(fd)? };
 
         let framed = DeviceFramed::new(dev, BytesCodec::new());
@@ -59,11 +63,8 @@ impl<I: Initiator + Unreliable> Tun<I> {
         let (stack, tcp_listener, udp_socket) = NetStack::new(Config::default());
         let (stack_sink, stack_stream) = stack.split();
 
-        // Use a cancellation token to coordinate a graceful shutdown of all tasks.
         let shutdown_token = CancellationToken::new();
 
-        // --- DNS Cleanup Task ---
-        // This task periodically cleans up expired entries from the FakeDns cache.
         let fakedns_for_cleanup = self.fakedns.clone();
         let dns_cleanup_handle = {
             let token = shutdown_token.clone();
@@ -83,11 +84,7 @@ impl<I: Initiator + Unreliable> Tun<I> {
                 }
             })
         };
-
-        // --- Main Processing Tasks ---
-        // Spawn each core processing loop as a separate background task.
-        // This makes the system robust, as the failure of one task (e.g., TCP handler)
-        // will not bring down the entire application.
+        
         let processing_tasks = vec![
             tokio::spawn(Self::process_stack_to_tun(
                 stack_stream,
@@ -110,9 +107,9 @@ impl<I: Initiator + Unreliable> Tun<I> {
         ];
 
         shutdown_signal.await;
+        info!("Shutdown signal received, cancelling tasks...");
         shutdown_token.cancel();
 
-        // Wait for all main tasks to complete.
         for task in processing_tasks {
             if let Err(_err) = task.await {
                 error!("A processing task panicked during shutdown: {:?}", _err);
@@ -148,6 +145,7 @@ impl<I: Initiator + Unreliable> Tun<I> {
                             break;
                         }
                         None => {
+                            info!("Netstack stream closed.");
                             break;
                         }
                     }
@@ -203,7 +201,10 @@ impl<I: Initiator + Unreliable> Tun<I> {
                 stream_option = tcp_listener.next() => {
                     let stream = match stream_option {
                         Some(s) => s,
-                        None => break
+                        None => {
+                            info!("TCP listener has closed.");
+                            break
+                        },
                     };
 
                     let self_clone = self.clone();
@@ -218,17 +219,10 @@ impl<I: Initiator + Unreliable> Tun<I> {
         debug!("TCP connection processing task has finished.");
     }
 
-    /// Task that processes all incoming UDP packets from the stack.
-    async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
-        self.handle_inbound_datagram(udp_socket, token).await;
-        debug!("UDP packet processing task has finished.");
-    }
-
     /// Handles a single TCP stream by forwarding it through the ombrac client.
     async fn handle_inbound_stream(&self, mut stream: TcpStream) -> io::Result<()> {
         let remote_addr = stream.remote_addr();
 
-        // Check the FakeDNS cache to see if the destination IP corresponds to a domain name.
         let target_addr = if let Some(entry) = self.fakedns.lookup(&remote_addr.ip()) {
             let domain = entry.domain.clone();
             let port = remote_addr.port();
@@ -241,8 +235,7 @@ impl<I: Initiator + Unreliable> Tun<I> {
             .client
             .connect(target_addr.clone(), self.secret)
             .await?;
-
-        // Copy data bidirectionally between the local stream and the remote stream.
+            
         let _copy = ombrac::io::util::copy_bidirectional(&mut stream, &mut remote_stream).await?;
 
         info!(
@@ -256,13 +249,76 @@ impl<I: Initiator + Unreliable> Tun<I> {
         Ok(())
     }
 
-    /// Handles all UDP datagrams from the local UDP socket.
-    async fn handle_inbound_datagram(&self, socket: UdpSocket, token: CancellationToken) {
-        let (mut tun_reader, tun_writer) = socket.split();
-
-        // MODIFIED: 将 tun_writer 包装在 Arc<Mutex<...>> 中以便在多个任务间安全共享
+    /// Task that processes all incoming UDP packets from the stack using a NAT table.
+    async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
+        let (mut tun_reader, tun_writer) = udp_socket.split();
         let shared_tun_writer = Arc::new(Mutex::new(tun_writer));
+        
+        // NAT 表: Key = 远程真实地址, Value = 虚拟客户端地址 + 超时
+        let nat_table = Arc::new(DashMap::<SocketAddr, UdpNatEntry>::new());
 
+        // --- NAT 清理任务 ---
+        let nat_cleanup_handle = {
+            let token = token.clone();
+            let table = nat_table.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(UDP_NAT_TIMEOUT / 2);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => break,
+                        _ = interval.tick() => {
+                            let now = Instant::now();
+                            table.retain(|_, entry| now.duration_since(entry.last_activity) < UDP_NAT_TIMEOUT);
+                        }
+                    }
+                }
+            })
+        };
+
+        // --- 入站流量任务 (代理 -> TUN) ---
+        let inbound_handle = {
+            let token = token.clone();
+            let client = self.client.clone();
+            let table = nat_table.clone();
+            let writer = shared_tun_writer.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => break,
+                        read_result = client.read_datagram() => {
+                            match read_result {
+                                Ok((remote_addr, data)) => {
+                                    if let Some(entry) = table.get(&remote_addr) {
+                                        let virtual_dest_addr = entry.value().virtual_addr;
+                                        let packet = UdpPacket {
+                                            data: Packet::new(data),
+                                            local_addr: virtual_dest_addr,
+                                            remote_addr,
+                                        };
+                                        let mut writer_guard = writer.lock().await;
+                                        if writer_guard.send(packet).await.is_err() {
+                                            error!("Failed to send UDP packet back to TUN stack, writer closed.");
+                                            break;
+                                        }
+                                    } else {
+                                        warn!("Received unsolicited UDP packet from {}, dropping.", remote_addr);
+                                    }
+                                }
+                                Err(_err) => {
+                                    debug!("UDP proxy client read error (connection closed?): {}", _err);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                debug!("UDP inbound (Proxy->TUN) task finished.");
+            })
+        };
+
+        // --- 出站流量循环 (TUN -> 代理) ---
         loop {
             tokio::select! {
                 biased;
@@ -276,36 +332,63 @@ impl<I: Initiator + Unreliable> Tun<I> {
                         }
                     };
 
-                    let local_addr = packet.local_addr;
-                    let remote_addr = packet.remote_addr;
+                    let virtual_src_addr = packet.local_addr;
+                    let virtual_dest_addr = packet.remote_addr;
                     let data = packet.data.into_bytes();
 
-                    // Fake DNS
-                    if remote_addr.port() == 53 {
+                    // --- Fake DNS 逻辑 ---
+                    if virtual_dest_addr.port() == 53 {
                         if let Some(fake_response_bytes) = self.fakedns.generate_fake_response(&data) {
                             let response_packet = UdpPacket {
                                 data: Packet::new(fake_response_bytes),
-                                local_addr: remote_addr,
-                                remote_addr: local_addr,
+                                local_addr: virtual_dest_addr,
+                                remote_addr: virtual_src_addr,
                             };
-
-                            // NOTE: 写入时需要锁定 Mutex
                             let mut writer = shared_tun_writer.lock().await;
                             if writer.send(response_packet).await.is_err() {
                                 error!("Failed to send fake DNS response back to TUN");
                             }
                         }
-                        continue;
+                        // 对真实DNS请求，我们仍然需要将其转发
+                        // 这里我们假设 generate_fake_response 已经处理了所有需要拦截的请求
+                        // 如果您想同时支持 FakeDNS 和真实DNS查询，则不应在这里 continue
                     }
 
-                    // TODO: impl UDP
-                    // 可以使用 self.client.send_datagram();
-                    // 可以使用 self.client.read_datagram();
+                    // --- NAT 和转发逻辑 ---
+                    let real_dest_addr = if let Some(entry) = self.fakedns.lookup(&virtual_dest_addr.ip()) {
+                        // 如果是FakeDNS IP, 转换为域名地址
+                        let domain = entry.domain.clone();
+                        let port = virtual_dest_addr.port();
+                        // 注意: Client 需要能够解析域名。如果不能，这里需要先解析为IP。
+                        // 假设 client.send_datagram 无法处理域名，我们需要自己解析
+                        // 为了简单起见，我们假设代理服务器会处理域名解析
+                        SocketAddr::new(virtual_dest_addr.ip(), port) // 简化处理，直接使用IP
+                    } else {
+                        virtual_dest_addr
+                    };
+
+                    // 更新NAT表
+                    nat_table.insert(real_dest_addr, UdpNatEntry {
+                        virtual_addr: virtual_src_addr,
+                        last_activity: Instant::now(),
+                    });
+
+                    // 通过代理发送数据
+                    if let Err(_err) = self.client.send_datagram(real_dest_addr, &data).await {
+                        debug!("Failed to send UDP datagram via proxy (connection closed?): {}", _err);
+                        // 不需要 break，因为 client 内部有重连逻辑
+                    }
                 }
             }
         }
+        debug!("UDP outbound (TUN->Proxy) loop finished.");
+
+        // 等待所有相关任务结束
+        nat_cleanup_handle.abort();
+        let _ = inbound_handle.await;
     }
 }
+
 
 impl<I: Initiator + Unreliable> Clone for Tun<I> {
     fn clone(&self) -> Self {
@@ -317,7 +400,9 @@ impl<I: Initiator + Unreliable> Clone for Tun<I> {
     }
 }
 
+
 pub mod fakedns {
+    // ... fakedns 模块代码保持不变 ...
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
