@@ -3,17 +3,17 @@ use std::sync::Arc;
 use ombrac::Secret;
 use ombrac::client::Client;
 use ombrac_macros::{debug, info};
-use ombrac_transport::Initiator;
+use ombrac_transport::{Initiator, Unreliable};
 use socks_lib::io::{self, AsyncRead, AsyncWrite};
 use socks_lib::v5::server::Handler;
 use socks_lib::v5::{Address as SocksAddress, Request, Stream};
 
-pub struct CommandHandler<I: Initiator> {
+pub struct CommandHandler<I: Initiator + Unreliable> {
     ombrac_client: Arc<Client<I>>,
     secret: Secret,
 }
 
-impl<I: Initiator> CommandHandler<I> {
+impl<I: Initiator + Unreliable> CommandHandler<I> {
     pub fn new(inner: Arc<Client<I>>, secret: Secret) -> Self {
         Self {
             ombrac_client: inner,
@@ -32,7 +32,7 @@ impl<I: Initiator> CommandHandler<I> {
     }
 }
 
-impl<I: Initiator> Handler for CommandHandler<I> {
+impl<I: Initiator + Unreliable> Handler for CommandHandler<I> {
     async fn handle<T>(&self, stream: &mut Stream<T>, request: Request) -> io::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + Sync,

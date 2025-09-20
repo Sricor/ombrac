@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
+
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 
-use ombrac_transport::{Initiator, Reliable};
+use ombrac_transport::{Initiator, Reliable, Unreliable};
 
 use crate::Secret;
 use crate::address::Address;
@@ -11,7 +13,7 @@ pub struct Client<T> {
     transport: T,
 }
 
-impl<T: Initiator> Client<T> {
+impl<T: Initiator + Unreliable> Client<T> {
     pub fn new(transport: T) -> Self {
         Self { transport }
     }
@@ -27,6 +29,14 @@ impl<T: Initiator> Client<T> {
         stream.write_all(&request.to_bytes()?).await?;
 
         Ok(Stream(stream))
+    }
+
+    pub async fn send_datagram(&self, dest: SocketAddr, data: &[u8]) -> io::Result<()> {
+        self.transport.send_datagram(dest, data).await
+    }
+
+    pub async fn read_datagram(&self) -> io::Result<(SocketAddr, bytes::Bytes)> {
+        self.transport.read_datagram().await
     }
 }
 

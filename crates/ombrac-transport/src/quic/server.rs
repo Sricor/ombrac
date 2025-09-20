@@ -1,14 +1,16 @@
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
-use ombrac_macros::{debug, error, info};
+use ombrac_macros::{debug, error, info, warn};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
 use crate::quic::TransportConfig;
+use crate::quic::protocol::{decode_addr, encode_addr};
 use crate::quic::stream::Stream;
 use crate::{Acceptor, Reliable};
 
@@ -111,6 +113,8 @@ impl Config {
     }
 }
 
+const MAX_DATAGRAM_SIZE: usize = 65507;
+
 pub struct Server {
     endpoint: Arc<quinn::Endpoint>,
     stream_receiver: Receiver<Stream>,
@@ -118,7 +122,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(config: Config, socket: UdpSocket) -> Result<Self> {
+    pub async fn new(config: Config, socket: std::net::UdpSocket) -> Result<Self> {
         let server_config = config.build_server_config()?;
         let endpoint_config = config.build_endpoint_config()?;
 
@@ -166,7 +170,7 @@ impl Server {
     }
 
     /// Switch to a new UDP socket
-    pub fn rebind(&self, socket: UdpSocket) -> Result<()> {
+    pub fn rebind(&self, socket: std::net::UdpSocket) -> Result<()> {
         Ok(self.endpoint.rebind(socket)?)
     }
 
@@ -192,6 +196,8 @@ async fn run(
                         Ok(new_connection) => {
                             info!("New connection from: {}", new_connection.remote_address());
                             let connection = Arc::new(new_connection);
+
+                            handle_full_cone_proxy(connection.clone()).await;
 
                             loop {
                                 tokio::select! {
@@ -220,6 +226,83 @@ async fn run(
             }
         }
     }
+}
+
+async fn handle_full_cone_proxy(conn: Arc<quinn::Connection>) {
+    // 1. 创建专用的 UDP 套接字
+    let proxy_socket = match UdpSocket::bind("0.0.0.0:0").await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            error!("Failed to bind UDP socket for proxy: {}", e);
+            conn.close(1u32.into(), b"Internal Server Error");
+            return;
+        }
+    };
+    info!(
+        "Created UDP proxy socket at {} for client {}",
+        proxy_socket.local_addr().unwrap(),
+        conn.remote_address()
+    );
+
+    // 2. 启动两个任务进行双向数据转发
+    // 任务1: 从 QUIC 读取数据报, 解码目标地址, 然后通过 UDP 套接字发送出去
+    let fwd_conn = conn.clone();
+    let fwd_socket = proxy_socket.clone();
+    let fwd_task = tokio::spawn(async move {
+        loop {
+            match fwd_conn.read_datagram().await {
+                Ok(datagram) => {
+                    if let Some((dest_addr, payload)) = decode_addr(&datagram) {
+                        if let Err(e) = fwd_socket.send_to(payload, dest_addr).await {
+                            warn!("Failed to send UDP packet to {}: {}", dest_addr, e);
+                        }
+                    } else {
+                        warn!(
+                            "Received invalid datagram from client {}",
+                            fwd_conn.remote_address()
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!("QUIC datagram read error (connection closing?): {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // 任务2: 从 UDP 套接字读取数据, 编码源地址, 然后通过 QUIC 数据报发回客户端
+    let bwd_conn = conn.clone();
+    let bwd_socket = proxy_socket.clone();
+    let bwd_task = tokio::spawn(async move {
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        loop {
+            match bwd_socket.recv_from(&mut buf).await {
+                Ok((len, source_addr)) => {
+                    let payload = &buf[..len];
+                    let mut response_datagram = encode_addr(&source_addr);
+                    response_datagram.extend_from_slice(payload);
+
+                    if let Err(e) = bwd_conn.send_datagram(response_datagram.into()) {
+                        debug!("Failed to send QUIC datagram (connection closing?): {}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("UDP socket recv_from error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // 等待任一任务结束. 如果一个方向的转发停止 (通常是由于QUIC连接断开), 我们就清理所有资源.
+    tokio::select! {
+        _ = fwd_task => {},
+        _ = bwd_task => {},
+    }
+
+    info!("Closing UDP proxy for client {}", conn.remote_address());
 }
 
 impl Acceptor for Server {

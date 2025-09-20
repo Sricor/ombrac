@@ -23,6 +23,9 @@ pub enum Error {
     #[error("QUIC ConnectionError error: {0}")]
     QuinnConnection(#[from] quinn::ConnectionError),
 
+    #[error("QUIC Datagram send error: {0}")]
+    QuinnSendDatagram(#[from] quinn::SendDatagramError),
+
     #[error("Rustls error: {0}")]
     QuinnVarInt(#[from] quinn::VarIntBoundsExceeded),
 

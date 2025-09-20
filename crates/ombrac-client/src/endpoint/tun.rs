@@ -14,7 +14,7 @@ use ombrac::client::Client;
 use ombrac::prelude::Address;
 use ombrac_macros::{error, info};
 use ombrac_netstack::*;
-use ombrac_transport::Initiator;
+use ombrac_transport::{Initiator, Unreliable};
 
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -23,20 +23,18 @@ use tun_rs::{
     async_framed::{BytesCodec, DeviceFramed},
 };
 
-pub struct Tun<I: Initiator> {
+pub struct Tun<I: Initiator + Unreliable> {
     secret: Secret,
     client: Arc<Client<I>>,
     fakedns: Arc<fakedns::FakeDns>,
-    active_udp_relays: Arc<DashMap<SocketAddr, mpsc::Sender<Bytes>>>,
 }
 
-impl<I: Initiator> Tun<I> {
+impl<I: Initiator + Unreliable> Tun<I> {
     pub fn new(client: Arc<Client<I>>, secret: Secret, fakedns: Arc<fakedns::FakeDns>) -> Self {
         Self {
             client,
             secret,
             fakedns,
-            active_udp_relays: Arc::new(DashMap::new()),
         }
     }
 
@@ -282,6 +280,7 @@ impl<I: Initiator> Tun<I> {
                     let remote_addr = packet.remote_addr;
                     let data = packet.data.into_bytes();
 
+                    // Fake DNS
                     if remote_addr.port() == 53 {
                         if let Some(fake_response_bytes) = self.fakedns.generate_fake_response(&data) {
                             let response_packet = UdpPacket {
@@ -298,19 +297,22 @@ impl<I: Initiator> Tun<I> {
                         }
                         continue;
                     }
+
+                    // TODO: impl UDP
+                    // 可以使用 self.client.send_datagram();
+                    // 可以使用 self.client.read_datagram();
                 }
             }
         }
     }
 }
 
-impl<I: Initiator> Clone for Tun<I> {
+impl<I: Initiator + Unreliable> Clone for Tun<I> {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
             fakedns: self.fakedns.clone(),
             secret: self.secret,
-            active_udp_relays: self.active_udp_relays.clone(),
         }
     }
 }

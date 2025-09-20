@@ -2,6 +2,7 @@ mod error;
 mod stream;
 
 pub mod client;
+pub mod protocol;
 pub mod server;
 
 use std::path::Path;

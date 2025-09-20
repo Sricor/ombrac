@@ -4,12 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::{ArcSwap, Guard};
+use bytes::Bytes;
 use ombrac_macros::{debug, error, info, warn};
 use tokio::sync::Mutex;
 
 use crate::quic::TransportConfig;
+use crate::quic::protocol::{decode_addr, encode_addr};
 use crate::quic::stream::Stream;
-use crate::{Initiator, Reliable};
+use crate::{DatagramReceiver, DatagramSender, Initiator, Reliable};
 
 use super::{Result, error::Error};
 
@@ -157,6 +159,65 @@ impl Client {
         }
     }
 
+    pub async fn send_datagram(&self, dest_addr: SocketAddr, payload: &[u8]) -> Result<()> {
+        let mut datagram_buf = encode_addr(&dest_addr);
+        datagram_buf.extend_from_slice(payload);
+        let datagram = bytes::Bytes::from(datagram_buf);
+
+        loop {
+            let conn_arc = self.connection.load();
+            match conn_arc.send_datagram(datagram.clone()) {
+                Ok(()) => return Ok(()),
+                Err(quinn::SendDatagramError::ConnectionLost(e)) => {
+                    warn!("Connection lost on send, attempting to reconnect: {}", e);
+                    self.reconnect_on_error(conn_arc).await?;
+                }
+                Err(e) => {
+                    error!("Failed to send datagram: {:?}", e);
+                    return Err(Error::QuinnSendDatagram(e));
+                }
+            }
+        }
+    }
+
+    pub async fn read_datagram(&self) -> Result<(SocketAddr, Bytes)> {
+        loop {
+            let conn_arc = self.connection.load();
+            match conn_arc.read_datagram().await {
+                Ok(datagram) => {
+                    if let Some((addr, payload)) = decode_addr(&datagram) {
+                        return Ok((addr, Bytes::copy_from_slice(payload)));
+                    } else {
+                        warn!("Received invalid datagram from server");
+                    }
+                }
+                Err(quinn::ConnectionError::ApplicationClosed(_))
+                | Err(quinn::ConnectionError::ConnectionClosed(_))
+                | Err(quinn::ConnectionError::LocallyClosed)
+                | Err(quinn::ConnectionError::Reset)
+                | Err(quinn::ConnectionError::TimedOut) => {
+                    warn!("Connection lost on read, attempting to reconnect");
+                    self.reconnect_on_error(conn_arc).await?;
+                }
+                Err(e) => {
+                    error!("Unexpected connection error on read: {:?}", e);
+                    return Err(Error::QuinnConnection(e));
+                }
+            }
+        }
+    }
+
+    async fn reconnect_on_error(&self, old_conn_arc: Guard<Arc<quinn::Connection>>) -> Result<()> {
+        let _lock = self.reconnect_lock.lock().await;
+        if !Arc::ptr_eq(&*old_conn_arc, &*self.connection.load()) {
+            return Ok(());
+        }
+
+        self.connection.store(Arc::new(self.connect().await?));
+
+        Ok(())
+    }
+
     pub async fn reconnect(&self) -> Result<()> {
         let _lock = self.reconnect_lock.lock().await;
         self.connection.store(Arc::new(self.connect().await?));
@@ -233,6 +294,18 @@ impl Client {
 impl Initiator for Client {
     async fn open_bidirectional(&self) -> io::Result<impl Reliable> {
         Ok(Client::open_bidirectional(self).await?)
+    }
+}
+
+impl DatagramSender for Client {
+    async fn send_datagram(&self, dest: SocketAddr, data: &[u8]) -> io::Result<()> {
+        Ok(self.send_datagram(dest, data).await?)
+    }
+}
+
+impl DatagramReceiver for Client {
+    async fn read_datagram(&self) -> io::Result<(SocketAddr, bytes::Bytes)> {
+        Ok(self.read_datagram().await?)
     }
 }
 

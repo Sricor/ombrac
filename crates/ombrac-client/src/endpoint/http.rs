@@ -7,7 +7,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use ombrac::prelude::{Address, Client, Secret};
 use ombrac_macros::{error, info};
-use ombrac_transport::Initiator;
+use ombrac_transport::{Initiator, Unreliable};
 use tokio::net::TcpListener;
 
 type ClientBuilder = hyper::client::conn::http1::Builder;
@@ -23,7 +23,7 @@ impl Server {
         shutdown_signal: impl Future<Output = ()>,
     ) -> io::Result<()>
     where
-        I: Initiator,
+        I: Initiator + Unreliable,
     {
         let ombrac = Arc::clone(&ombrac_client);
 
@@ -73,7 +73,7 @@ impl Server {
         _from_addr: SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
     where
-        I: Initiator,
+        I: Initiator + Unreliable,
     {
         use ombrac::io::util::copy_bidirectional;
 

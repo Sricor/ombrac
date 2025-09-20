@@ -3,6 +3,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ombrac_transport::Unreliable;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
@@ -111,7 +112,7 @@ fn setup_logging(config: &crate::config::LoggingConfig) {
 }
 
 #[cfg(feature = "endpoint-http")]
-async fn start_http_server<I: Initiator>(
+async fn start_http_server<I: Initiator + Unreliable>(
     ombrac: Arc<Client<I>>,
     secret: Secret,
     address: SocketAddr,
@@ -136,7 +137,7 @@ async fn start_http_server<I: Initiator>(
 }
 
 #[cfg(feature = "endpoint-socks")]
-async fn start_socks_server<I: Initiator>(
+async fn start_socks_server<I: Initiator + Unreliable>(
     ombrac: Arc<Client<I>>,
     secret: Secret,
     address: SocketAddr,
@@ -164,7 +165,7 @@ async fn start_socks_server<I: Initiator>(
 }
 
 #[cfg(feature = "endpoint-tun")]
-async fn start_tun_device<I: Initiator>(
+async fn start_tun_device<I: Initiator + Unreliable>(
     client: Arc<Client<I>>,
     secret: Secret,
     config: &TunConfig,
