@@ -197,7 +197,7 @@ async fn run(
                             info!("New connection from: {}", new_connection.remote_address());
                             let connection = Arc::new(new_connection);
 
-                            handle_full_cone_proxy(connection.clone()).await;
+                            tokio::spawn(handle_full_cone_proxy(connection.clone()));
 
                             loop {
                                 tokio::select! {

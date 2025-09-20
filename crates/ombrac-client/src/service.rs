@@ -172,21 +172,21 @@ async fn start_tun_device<I: Initiator + Unreliable>(
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> io::Result<JoinHandle<()>> {
     use crate::endpoint::tun::Tun;
-    use crate::endpoint::tun::fakedns::FakeDns;
+    // use crate::endpoint::tun::fakedns::FakeDns;
     use ipnet::{Ipv4Net, Ipv6Net};
     use std::str::FromStr;
 
-    let fakedns = {
-        let dns_pool = Ipv4Net::from_str(
-            config
-                .dns_pool
-                .clone()
-                .unwrap_or("198.18.0.0/16".to_string())
-                .as_str(),
-        )
-        .unwrap();
-        FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
-    };
+    // let fakedns = {
+    //     let dns_pool = Ipv4Net::from_str(
+    //         config
+    //             .dns_pool
+    //             .clone()
+    //             .unwrap_or("198.18.0.0/16".to_string())
+    //             .as_str(),
+    //     )
+    //     .unwrap();
+    //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
+    // };
 
     let device = {
         let mut builder = tun_rs::DeviceBuilder::new();
@@ -210,7 +210,7 @@ async fn start_tun_device<I: Initiator + Unreliable>(
     );
 
     let fd = device.into_fd()?;
-    let tun = Tun::new(client, secret, fakedns.into());
+    let tun = Tun::new(client, secret);
     let handle = tokio::spawn(async move {
         let shutdown_signal = async {
             let _ = shutdown_rx.recv().await;
