@@ -91,10 +91,10 @@ pub struct Datagram<U: Unreliable>(pub(crate) U);
 impl<U: Unreliable> Datagram<U> {
     #[inline]
     pub async fn send(&self, packet: Associate) -> io::Result<()> {
-        eprintln!("SEND {:?}", packet.data);
+        eprintln!("SEND Associate {:?}", packet);
         eprintln!("\n");
         let bytes = packet.to_bytes()?;
-        
+
         self.0.send(bytes).await
     }
 
@@ -102,7 +102,7 @@ impl<U: Unreliable> Datagram<U> {
     pub async fn recv(&self) -> io::Result<Associate> {
         let mut bytes = self.0.recv().await?;
         let packet = Associate::from_bytes(&mut bytes)?;
-        eprintln!("SEND {:?}", packet.data);
+        eprintln!("SEND Associate {:?}", packet);
         eprintln!("\n");
 
         Ok(packet)
