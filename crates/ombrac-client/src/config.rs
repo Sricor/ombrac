@@ -54,7 +54,6 @@ pub struct Args {
 
 // JSON Config File
 #[derive(Deserialize, Serialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
@@ -62,15 +61,12 @@ pub struct ConfigFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
 
-    #[serde(flatten)]
     pub endpoint: EndpointConfig,
 
     #[cfg(feature = "transport-quic")]
-    #[serde(flatten)]
     pub transport: TransportConfig,
 
     #[cfg(feature = "tracing")]
-    #[serde(flatten)]
     pub logging: LoggingConfig,
 }
 
@@ -90,7 +86,6 @@ pub struct EndpointConfig {
 
     #[cfg(feature = "endpoint-tun")]
     #[clap(flatten)]
-    #[serde(flatten)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tun: Option<TunConfig>,
 }
@@ -326,7 +321,7 @@ pub fn load() -> Result<ServiceConfig, Box<figment::Error>> {
         logging: args.logging,
     };
 
-    figment = figment.merge(Serialized::from(cli_overrides, "default"));
+    figment = figment.merge(Serialized::defaults(cli_overrides));
 
     let config: ConfigFile = figment.extract()?;
 

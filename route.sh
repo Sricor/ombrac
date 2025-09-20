@@ -1,7 +1,6 @@
 #!/bin/bash
-#__author__: cavivie
 
-DEFAULT_TUN_ADDR="198.19.0.2/24"
+DEFAULT_TUN_ADDR="198.19.0.1/24"
 DEFAULT_TUN_DEST="198.19.0.1"
 
 function do_route() {
@@ -16,7 +15,7 @@ function do_route() {
     sudo route ${route_op} -net 32.0.0.0/3 ${tun_dest}
     sudo route ${route_op} -net 64.0.0.0/2 ${tun_dest}
     sudo route ${route_op} -net 128.0.0.0/1 ${tun_dest}
-    # tun2 do like this automatically
+
     sudo route ${route_op} -net ${tun_addr} ${tun_dest}
 }
 
@@ -27,10 +26,8 @@ function usage(){
     route help   display all usages of the shell script"
 }
 
-# START MAIN-OPTIONS
 case $1 in
     add) do_route add $2 $3;;
     del) do_route delete $2 $3;;
     *) usage ;;
 esac
-# END MAIN-OPTIONS
