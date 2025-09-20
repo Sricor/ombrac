@@ -160,7 +160,11 @@ impl Client {
     }
 
     pub async fn send_datagram(&self, dest_addr: SocketAddr, payload: &[u8]) -> Result<()> {
-        info!("Client Send Datagram, dest_addr: {}, playload: {}", dest_addr, payload.len());
+        info!(
+            "Client Send Datagram, dest_addr: {}, playload: {}",
+            dest_addr,
+            payload.len()
+        );
 
         let mut datagram_buf = encode_addr(&dest_addr);
         datagram_buf.extend_from_slice(payload);
@@ -188,7 +192,11 @@ impl Client {
             match conn_arc.read_datagram().await {
                 Ok(datagram) => {
                     if let Some((addr, payload)) = decode_addr(&datagram) {
-                        info!("Client Read Datagram, addr: {}, playload: {}", addr, payload.len());
+                        info!(
+                            "Client Read Datagram, addr: {}, playload: {}",
+                            addr,
+                            payload.len()
+                        );
                         return Ok((addr, Bytes::copy_from_slice(payload)));
                     } else {
                         warn!("Received invalid datagram from server");

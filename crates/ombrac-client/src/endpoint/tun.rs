@@ -8,14 +8,13 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use ombrac::prelude::{Address, Secret};
 use ombrac::client::Client;
+use ombrac::prelude::{Address, Secret};
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_netstack::*;
-// 为了清晰，我们将 Unreliable 重命名为 UnreliableDatagram
 use ombrac_transport::{Initiator, Unreliable};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tun_rs::{
     AsyncDevice,
@@ -110,10 +109,11 @@ impl<T: Transport> Tun<T> {
                     .process_tcp_connections(tcp_listener, shutdown_token.clone()),
             ),
             // 将 NAT 表传递给 UDP 处理程序
-            tokio::spawn(
-                self.clone()
-                    .process_udp_packets(udp_socket, udp_nat_table, shutdown_token.clone()),
-            ),
+            tokio::spawn(self.clone().process_udp_packets(
+                udp_socket,
+                udp_nat_table,
+                shutdown_token.clone(),
+            )),
         ];
 
         // 等待外部关闭信号
@@ -127,7 +127,7 @@ impl<T: Transport> Tun<T> {
                 error!("A processing task panicked or failed: {:?}", err);
             }
         }
-        
+
         // 明确中止清理任务
         nat_cleanup_handle.abort();
         debug!("TUN stack has shut down completely.");
@@ -233,7 +233,8 @@ impl<T: Transport> Tun<T> {
         nat_table: Arc<DashMap<SocketAddr, NatEntry>>,
         token: CancellationToken,
     ) {
-        self.handle_inbound_datagram(udp_socket, nat_table, token).await;
+        self.handle_inbound_datagram(udp_socket, nat_table, token)
+            .await;
         debug!("UDP packet processing task has finished.");
     }
 
@@ -249,7 +250,8 @@ impl<T: Transport> Tun<T> {
             .await?;
 
         // 在本地流和远程流之间双向复制数据
-        let (up, down) = ombrac::io::util::copy_bidirectional(&mut stream, &mut remote_stream).await?;
+        let (up, down) =
+            ombrac::io::util::copy_bidirectional(&mut stream, &mut remote_stream).await?;
 
         info!(
             "TCP Close: {} <-> {}. Sent: {}, Recv: {}",
@@ -258,21 +260,22 @@ impl<T: Transport> Tun<T> {
             up,
             down
         );
- 
+
         Ok(())
     }
 
-    /// 处理来自本地 UDP 套接字的所有 UDP 数据报。
     async fn handle_inbound_datagram(
         &self,
         socket: UdpSocket,
         nat_table: Arc<DashMap<SocketAddr, NatEntry>>,
         token: CancellationToken,
     ) {
-        let (mut tun_reader, tun_writer) = socket.split();
-        let shared_tun_writer = Arc::new(Mutex::new(tun_writer));
+        let (mut tun_reader, mut tun_writer) = socket.split();
 
-        // 任务 1: 从 TUN 读取数据包 -> 发送到远程代理
+        // 创建一个新的 MPSC channel 来将数据从 proxy 端传递给 TUN 写入器
+        let (proxy_to_tun_sender, mut proxy_to_tun_receiver) = mpsc::channel::<UdpPacket>(1024);
+
+        // 任务 1: 从 TUN 读取 -> 发送到远程代理 (不变)
         let client_clone = self.client.clone();
         let nat_table_clone = nat_table.clone();
         let token_clone = token.clone();
@@ -286,11 +289,9 @@ impl<T: Transport> Tun<T> {
                             Some(p) => p,
                             None => break,
                         };
-                        
-                        // 插入/更新 NAT 条目，记录会话的源地址和当前时间
+
                         nat_table_clone.insert(packet.remote_addr, (packet.local_addr, Instant::now()));
 
-                        // 通过客户端将数据报转发出去
                         if let Err(e) = client_clone.send_datagram(packet.remote_addr, &packet.data.into_bytes()).await {
                             error!("Failed to send UDP datagram via proxy for {}: {}", packet.remote_addr, e);
                         }
@@ -300,10 +301,10 @@ impl<T: Transport> Tun<T> {
             debug!("UDP TUN-to-Proxy task has finished.");
         });
 
-        // 任务 2: 从远程代理读取数据包 -> 写入 TUN
+        // 任务 2: 从远程代理读取 -> 发送到新的 channel (不再直接写入)
         let token_clone2 = token.clone();
         let self_clone = self.clone();
-        let proxy_to_tun = tokio::spawn(async move {
+        let proxy_to_channel = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -311,24 +312,20 @@ impl<T: Transport> Tun<T> {
                     datagram_result = self_clone.client.read_datagram() => {
                         match datagram_result {
                             Ok((source_addr, data)) => {
-                                // 在 NAT 表中查找此数据包应该发往哪个 TUN 内部地址
                                 if let Some(mut entry) = nat_table.get_mut(&source_addr) {
                                     let dest_addr = entry.value().0;
-
-                                    // 构造要注入 netstack 的数据包
                                     let response_packet = UdpPacket {
                                         data: Packet::new(data),
-                                        local_addr: source_addr,  // 对于 TUN 内的应用，源是远程地址
-                                        remote_addr: dest_addr,   // 目标是 TUN 内的应用地址
+                                        local_addr: source_addr,
+                                        remote_addr: dest_addr,
                                     };
 
-                                    let mut writer = shared_tun_writer.lock().await;
-                                    if let Err(e) = writer.send(response_packet).await {
-                                        error!("Failed to send UDP packet to TUN stack for {}: {}", dest_addr, e);
-                                    } else {
-                                        // 成功发送，更新会话的活跃时间
-                                        entry.value_mut().1 = Instant::now();
+                                    // 非阻塞地将包发送到 channel，锁的范围极小
+                                    if let Err(_) = proxy_to_tun_sender.send(response_packet).await {
+                                        error!("Proxy-to-TUN channel closed. Stopping task.");
+                                        break;
                                     }
+                                    entry.value_mut().1 = Instant::now();
                                 } else {
                                     warn!("Received UDP packet from unknown source {}, no NAT entry found. Dropping.", source_addr);
                                 }
@@ -341,13 +338,32 @@ impl<T: Transport> Tun<T> {
                     }
                 }
             }
-            debug!("UDP Proxy-to-TUN task has finished.");
+            debug!("UDP Proxy-to-Channel task has finished.");
         });
 
-        // 等待任一任务结束或收到关闭信号
+        // 任务 3: 新增一个专门的写入任务
+        let token_clone3 = token.clone();
+        let channel_to_tun = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = token_clone3.cancelled() => break,
+                    Some(packet) = proxy_to_tun_receiver.recv() => {
+                        // 这个任务是唯一一个访问 tun_writer 的地方，不再需要 Mutex
+                        if let Err(e) = tun_writer.send(packet).await {
+                            error!("Failed to send UDP packet to TUN stack: {}", e);
+                        }
+                    }
+                    else => break, // Channel closed
+                }
+            }
+            debug!("UDP Channel-to-TUN writer task has finished.");
+        });
+
         tokio::select! {
             _ = tun_to_proxy => {},
-            _ = proxy_to_tun => {},
+            _ = proxy_to_channel => {},
+            _ = channel_to_tun => {},
             _ = token.cancelled() => {},
         }
     }
