@@ -107,7 +107,7 @@ pub mod datagram {
         /// 3.  **Simplified State Management**: The complex NAT table mapping destinations to sockets is replaced
         ///     by a simple reverse-lookup map. A dedicated sweeper task is no longer needed; the session
         ///     times out monolithically if the client goes idle.
-        pub async fn handle_associate_refactored<V, U>(
+        pub async fn handle_associate<V, U>(
             validator: &V,
             datagram: Datagram<U>,
             config: Arc<UdpHandlerConfig>,
