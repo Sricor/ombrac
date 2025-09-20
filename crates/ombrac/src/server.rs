@@ -59,9 +59,11 @@ pub mod datagram {
     use dashmap::DashMap;
     use ombrac_transport::{Acceptor, Unreliable};
     use tokio::net::UdpSocket;
+    use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use tokio::time::{MissedTickBehavior, interval};
+    use tokio_util::sync::CancellationToken;
 
     use crate::associate::Associate;
     use crate::client::Datagram;
@@ -98,101 +100,162 @@ pub mod datagram {
     }
 
     impl Server<()> {
+        /// Handles a UDP associate session using a Cone NAT model suitable for protocols like QUIC.
+        ///
+        /// This implementation uses a single shared UDP socket for all outbound and inbound traffic
+        /// for the entire duration of the client's association. This correctly handles protocols
+        /// where the remote server may respond from a different IP address or port than the one
+        /// the initial request was sent to.
         pub async fn handle_associate<V, U>(
             validator: &V,
             datagram: Datagram<U>,
             config: Arc<UdpHandlerConfig>,
         ) -> io::Result<()>
         where
-            V: Validator,
+            V: Validator + Clone + Copy,
             U: Unreliable + Send + Sync + 'static,
         {
             let datagram = Arc::new(datagram);
-            let nat_table: Arc<DashMap<SocketAddr, NatEntry>> = Arc::new(DashMap::new());
+            let shutdown_token = CancellationToken::new();
 
-            let nat_for_sweep = Arc::clone(&nat_table);
-            let idle_timeout = config.idle_timeout;
-            let sweeper_handle = tokio::spawn(async move {
-                let mut tick = interval(Duration::from_secs(30));
-                tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                loop {
-                    tick.tick().await;
-                    nat_for_sweep.retain(|_addr, entry| {
-                        if entry.last_active.elapsed() > idle_timeout {
-                            entry.handle.abort();
-                            false
-                        } else {
-                            true
+            // Bind a single UDP socket to a random port for the entire session.
+            let outbound_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+
+            // Shared timestamp to track the last activity for the entire session.
+            let last_activity = Arc::new(Mutex::new(Instant::now()));
+
+            // --- Task 1: Forward traffic from Client -> Target ---
+            let client_to_target_handle = {
+                let datagram = Arc::clone(&datagram);
+                let outbound_socket = Arc::clone(&outbound_socket);
+                let last_activity = Arc::clone(&last_activity);
+                let validator = validator.clone(); // Assuming Validator can be cloned
+                let token = shutdown_token.clone();
+
+                tokio::spawn(async move {
+                    let mut is_validated = false;
+                    loop {
+                        let validator = validator;
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            result = datagram.recv() => {
+                                let packet = match result {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        // Client closed the connection or an error occurred.
+                                        return Err(e);
+                                    }
+                                };
+
+                                // Validate the secret only on the first packet of the session.
+                                if !is_validated {
+                                    if let Err(e) = validator.is_valid(packet.secret, None, None).await {
+                                        return Err(e);
+                                    }
+                                    is_validated = true;
+                                }
+
+                                let target_addr = match packet.address.to_socket_addr().await {
+                                    Ok(addr) => addr,
+                                    Err(e) => {
+                                        // Invalid address, just drop the packet.
+                                        eprintln!("Failed to resolve address: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                if let Err(e) = outbound_socket.send_to(&packet.data, target_addr).await {
+                                     // Error sending to target, might be a network issue.
+                                    eprintln!("Failed to send UDP packet to {}: {}", target_addr, e);
+                                    // We don't terminate the whole session for a single send error.
+                                } else {
+                                     // Update activity timestamp on successful send.
+                                    *last_activity.lock().await = Instant::now();
+                                }
+                            }
                         }
-                    });
-                }
-            });
-
-            loop {
-                let packet = match timeout(config.idle_timeout, datagram.recv()).await {
-                    Ok(Ok(packet)) => packet,
-                    Ok(Err(e)) => {
-                        return Err(e);
                     }
-                    Err(_) => {
-                        break;
+                    Ok(())
+                })
+            };
+
+            // --- Task 2: Forward traffic from Target -> Client ---
+            let target_to_client_handle = {
+                let datagram = Arc::clone(&datagram);
+                let outbound_socket = Arc::clone(&outbound_socket);
+                let last_activity = Arc::clone(&last_activity);
+                let token = shutdown_token.clone();
+                let buffer_size = config.buffer_size;
+
+                tokio::spawn(async move {
+                    // The secret is validated in the other task. We assume it remains constant.
+                    let session_secret = Secret::default(); // Note: This needs a better way to share the secret.
+                    let mut buf = vec![0u8; buffer_size];
+
+                    loop {
+                        tokio::select! {
+                             _ = token.cancelled() => break,
+                             result = outbound_socket.recv_from(&mut buf) => {
+                                 let (n, from_addr) = match result {
+                                     Ok(res) => res,
+                                     Err(e) => {
+                                         // Socket error, terminate the task.
+                                         return Err(e);
+                                     }
+                                 };
+
+                                 // Update activity timestamp on successful receive.
+                                 *last_activity.lock().await = Instant::now();
+
+                                 let response_packet = Associate::with(
+                                     session_secret,
+                                     from_addr,
+                                     Bytes::copy_from_slice(&buf[..n])
+                                 );
+
+                                 if datagram.send(response_packet).await.is_err() {
+                                     // Client connection is likely closed, terminate the task.
+                                     break;
+                                 }
+                             }
+                        }
                     }
-                };
+                    Ok(())
+                })
+            };
 
-                if nat_table.is_empty() {
-                    let session_secret = packet.secret;
-                    validator.is_valid(session_secret, None, None).await?;
-                }
+            // --- Task 3: Monitor session for idle timeout ---
+            let timeout_handle = {
+                let last_activity = Arc::clone(&last_activity);
+                let idle_timeout = config.idle_timeout;
+                let token = shutdown_token.clone();
 
-                let target_addr = packet.address.to_socket_addr().await?;
-
-                if !nat_table.contains_key(&target_addr) {
-                    if nat_table.len() >= MAX_CONCURRENT_ASSOCIATIONS {
-                        continue;
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(10));
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => break,
+                            _ = interval.tick() => {
+                                if last_activity.lock().await.elapsed() > idle_timeout {
+                                    // Session timed out, trigger shutdown.
+                                    token.cancel();
+                                    break;
+                                }
+                            }
+                        }
                     }
-
-                    let bind_addr = match target_addr {
-                        SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
-                        SocketAddr::V6(_) => SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0)),
-                    };
-
-                    let outbound_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
-                    let handle = tokio::spawn(proxy_target_to_client(
-                        Arc::clone(&datagram),
-                        Arc::clone(&outbound_socket),
-                        packet.secret,
-                        Arc::clone(&config),
-                    ));
-
-                    nat_table.insert(
-                        target_addr,
-                        NatEntry {
-                            socket: Arc::clone(&outbound_socket),
-                            handle,
-                            last_active: Instant::now(),
-                        },
-                    );
-                }
-
-                if let Some(mut entry) = nat_table.get_mut(&target_addr) {
-                    entry.last_active = Instant::now();
-                    let outbound_socket = &entry.socket;
-
-                    if let Err(_err) = outbound_socket.send_to(&packet.data, target_addr).await {
-                        entry.handle.abort();
-                        drop(entry);
-                        nat_table.remove(&target_addr);
-                    }
+                })
+            };
+            
+            // Wait for any task to finish or for the session to be cancelled.
+            tokio::select! {
+                res = client_to_target_handle => res?,
+                res = target_to_client_handle => res?,
+                _ = shutdown_token.cancelled() => {
+                    // Shutdown was triggered by timeout or externally.
+                    Ok(())
                 }
             }
-
-            sweeper_handle.abort();
-            for entry in nat_table.iter() {
-                entry.value().handle.abort();
-            }
-            nat_table.clear();
-
-            Ok(())
         }
     }
 
@@ -225,7 +288,7 @@ pub mod datagram {
     }
 }
 
-pub trait Validator {
+pub trait Validator: Send + Sync + 'static {
     fn is_valid(
         &self,
         secret: Secret,

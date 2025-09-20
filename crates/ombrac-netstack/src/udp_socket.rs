@@ -37,12 +37,12 @@ pub struct UdpSocket {
     inbound: mpsc::Receiver<Packet>,
     outbound: mpsc::Sender<Packet>,
     buffer_pool: Arc<BufferPool>,
-    config: Config,
+    config: Arc<Config>,
 }
 
 impl UdpSocket {
     pub fn new(
-        config: Config,
+        config: Arc<Config>,
         inbound: mpsc::Receiver<Packet>,
         outbound: mpsc::Sender<Packet>,
         buffer_pool: Arc<BufferPool>,
@@ -126,7 +126,7 @@ impl SplitRead {
 
 #[derive(Clone)]
 pub struct SplitWrite {
-    config: Config,
+    config: Arc<Config>,
     send: mpsc::Sender<Packet>,
     buffer_pool: Arc<BufferPool>,
 }

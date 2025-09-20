@@ -16,6 +16,8 @@ function do_route() {
     sudo route ${route_op} -net 64.0.0.0/2 ${tun_dest}
     sudo route ${route_op} -net 128.0.0.0/1 ${tun_dest}
 
+    sudo route ${route_op} -host 192.168.31.5 ${tun_dest}
+
     sudo route ${route_op} -net ${tun_addr} ${tun_dest}
 }
 

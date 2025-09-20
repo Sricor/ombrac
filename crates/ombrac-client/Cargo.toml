@@ -74,7 +74,7 @@ serde = { workspace = true, features = ["derive"] }
 figment = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 blake3 = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal", "sync"] }
 tokio-util = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "color", "help", "usage", "error-context", "suggestions"] }
 tracing = { workspace = true, optional = true }

@@ -75,7 +75,7 @@ impl NetStack {
                 buffer_pool.clone(),
             ),
             UdpSocket::new(
-                config,
+                config.into(),
                 udp_outbound_stack,
                 packet_sender.clone(),
                 buffer_pool.clone(),
