@@ -28,7 +28,7 @@ pub struct Service {
 impl Service {
     pub async fn build(config: &ServiceConfig) -> io::Result<Self> {
         #[cfg(feature = "tracing")]
-        setup_logging(config);
+        setup_logging(&config.logging);
 
         let mut handles = Vec::new();
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -59,7 +59,11 @@ impl Service {
 
             #[cfg(feature = "endpoint-tun")]
             if let Some(config) = &config.endpoint.tun {
-                handles.push(start_tun(client, secret, config, shutdown_tx.subscribe()).await?);
+                if config.tun_ipv4.is_some() || config.tun_ipv6.is_some() {
+                    let handle =
+                        start_tun_device(client, secret, config, shutdown_tx.subscribe()).await?;
+                    handles.push(handle);
+                }
             }
         }
 
@@ -82,17 +86,15 @@ impl Service {
 }
 
 #[cfg(feature = "tracing")]
-fn setup_logging(config: &ServiceConfig) {
-    let log_level_str = config.logging.log_level.as_deref().unwrap_or("WARN");
-    let log_level: tracing::Level = log_level_str.parse().unwrap_or(tracing::Level::WARN);
+fn setup_logging(config: &crate::config::LoggingConfig) {
+    let log_level: tracing::Level = config.log_level.as_deref().unwrap().parse().unwrap();
 
     let subscriber = tracing_subscriber::fmt()
         .with_thread_ids(true)
         .with_max_level(log_level);
 
-    let (non_blocking, guard) = if let Some(path) = &config.logging.log_dir {
+    let (non_blocking, guard) = if let Some(path) = &config.log_dir {
         let prefix = config
-            .logging
             .log_prefix
             .as_deref()
             .unwrap_or_else(|| std::path::Path::new("log"));
@@ -162,7 +164,7 @@ async fn start_socks_server<I: Initiator>(
 }
 
 #[cfg(feature = "endpoint-tun")]
-async fn start_tun<I: Initiator>(
+async fn start_tun_device<I: Initiator>(
     client: Arc<Client<I>>,
     secret: Secret,
     config: &TunConfig,
@@ -170,34 +172,41 @@ async fn start_tun<I: Initiator>(
 ) -> io::Result<JoinHandle<()>> {
     use crate::endpoint::tun::Tun;
     use crate::endpoint::tun::fakedns::FakeDns;
+    use ipnet::{Ipv4Net, Ipv6Net};
+    use std::str::FromStr;
 
-    if config.tun_ipv4.is_none() && config.tun_ipv6.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "TUN device must be configured with at least one IPv4 or IPv6 address.",
-        ));
-    }
+    let fakedns = {
+        let dns_pool = Ipv4Net::from_str(
+            config
+                .dns_pool
+                .clone()
+                .unwrap_or("198.18.0.0/16".to_string())
+                .as_str(),
+        )
+        .unwrap();
+        FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
+    };
 
-    let mut builder = tun_rs::DeviceBuilder::new();
-    builder = builder.mtu(config.tun_mtu);
-    if let Some(ip) = config.tun_ipv4 {
-        builder = builder.ipv4(ip.addr(), ip.netmask(), None);
-    }
-    if let Some(ip) = config.tun_ipv6 {
-        builder = builder.ipv6(ip.addr(), ip.netmask());
-    }
+    let device = {
+        let mut builder = tun_rs::DeviceBuilder::new();
+        builder = builder.mtu(config.tun_mtu.unwrap_or(1500));
+        if let Some(ip_str) = &config.tun_ipv4 {
+            let ip = Ipv4Net::from_str(&ip_str).unwrap();
+            builder = builder.ipv4(ip.addr(), ip.netmask(), None);
+        }
+        if let Some(ip_str) = &config.tun_ipv6 {
+            let ip = Ipv6Net::from_str(&ip_str).unwrap();
+            builder = builder.ipv6(ip.addr(), ip.netmask());
+        }
+        builder.build_async()?
+    };
 
-    let fakedns = FakeDns::default();
-    let device = builder.build_async()?;
-
-    let mut tun_details = format!("MTU: {}", config.tun_mtu);
-    if let Some(ip) = config.tun_ipv4 {
-        tun_details.push_str(&format!(", IPv4: {}", ip));
-    }
-    if let Some(ip) = config.tun_ipv6 {
-        tun_details.push_str(&format!(", IPv6: {}", ip));
-    }
-    info!("Starting TUN endpoint, Name: {}, {}", device.name()?, tun_details);
+    info!(
+        "Starting TUN endpoint, Name: {}, MTU: {}, IP: {:?}",
+        device.name()?,
+        device.mtu()?,
+        device.addresses()?
+    );
 
     let fd = device.into_fd()?;
     let tun = Tun::new(client, secret, fakedns.into());
@@ -232,13 +241,7 @@ async fn quic_client_from_config(config: &ServiceConfig) -> io::Result<QuicClien
         }
     };
 
-    let mut addrs: Vec<_> = tokio::net::lookup_host(server).await?.collect();
-    if transport_cfg.prefer_ipv6 {
-        addrs.sort_by_key(|a| !a.is_ipv6());
-    } else if transport_cfg.prefer_ipv4 {
-        addrs.sort_by_key(|a| !a.is_ipv4());
-    }
-
+    let addrs: Vec<_> = tokio::net::lookup_host(server).await?.collect();
     let server_addr = addrs.into_iter().next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,

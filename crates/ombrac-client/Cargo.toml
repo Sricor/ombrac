@@ -70,7 +70,7 @@ ombrac-macros = { workspace = true }
 ombrac-transport = { workspace = true }
 ombrac-netstack = { workspace = true, optional = true }
 futures = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 figment = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 blake3 = { workspace = true }
