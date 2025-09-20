@@ -117,7 +117,7 @@ impl<I: Initiator> Tun<I> {
         }
 
         dns_cleanup_handle.abort();
-        warn!("TUN stack has shutdown complete");
+        debug!("TUN stack has shutdown complete");
 
         Ok(())
     }
@@ -151,7 +151,7 @@ impl<I: Initiator> Tun<I> {
                 }
             }
         }
-        warn!("Stack-to-TUN task has finished.");
+        debug!("Stack-to-TUN task has finished.");
     }
 
     /// Task to process packets from the TUN device and send them to the network stack.
@@ -184,7 +184,7 @@ impl<I: Initiator> Tun<I> {
                 }
             }
         }
-        warn!("TUN-to-stack task has finished.");
+        debug!("TUN-to-stack task has finished.");
     }
 
     /// Task that listens for new TCP connections from the stack and spawns a handler for each.
@@ -212,13 +212,13 @@ impl<I: Initiator> Tun<I> {
                 }
             }
         }
-        warn!("TCP connection processing task has finished.");
+        debug!("TCP connection processing task has finished.");
     }
 
     /// Task that processes all incoming UDP packets from the stack.
     async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
         self.handle_inbound_datagram(udp_socket, token).await;
-        warn!("UDP packet processing task has finished.");
+        debug!("UDP packet processing task has finished.");
     }
 
     /// Handles a single TCP stream by forwarding it through the ombrac client.

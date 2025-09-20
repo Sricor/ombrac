@@ -219,7 +219,7 @@ pub enum TlsMode {
 #[cfg(feature = "endpoint-tun")]
 #[derive(Deserialize, Serialize, Debug, Parser, Clone)]
 pub struct TunConfig {
-    /// The IPv4 address and subnet for the TUN device, in CIDR notation (e.g., 10.0.0.1/24).
+    /// The IPv4 address and subnet for the TUN device, in CIDR notation (e.g., 198.19.0.1/24).
     #[clap(long, help_heading = "Endpoint", value_name = "CIDR")]
     pub tun_ipv4: Option<ipnet::Ipv4Net>,
 

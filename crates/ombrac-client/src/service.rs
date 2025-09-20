@@ -119,7 +119,7 @@ async fn start_http_server<I: Initiator>(
     use tokio::net::TcpListener;
 
     let listener = TcpListener::bind(address).await?;
-    info!("HTTP/HTTPS endpoint listening on {}", address);
+    info!("Starting HTTP/HTTPS endpoint, listening on {}", address);
 
     let handle = tokio::spawn(async move {
         let shutdown_signal = async {
@@ -146,7 +146,7 @@ async fn start_socks_server<I: Initiator>(
     use socks_lib::v5::server::{Config as SocksConfig, Server as SocksServer};
 
     let listener = TcpListener::bind(address).await?;
-    info!("SOCKS endpoint listening on {}", address);
+    info!("Starting SOCKS5 endpoint, listening on {}", address);
 
     let handle = tokio::spawn(async move {
         let config = SocksConfig::new(NoAuthentication, CommandHandler::new(ombrac, secret));
@@ -171,8 +171,6 @@ async fn start_tun<I: Initiator>(
     use crate::endpoint::tun::Tun;
     use crate::endpoint::tun::fakedns::FakeDns;
 
-    info!("TUN Start");
-
     if config.tun_ipv4.is_none() && config.tun_ipv6.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -190,7 +188,18 @@ async fn start_tun<I: Initiator>(
     }
 
     let fakedns = FakeDns::default();
-    let fd = builder.build_async()?.into_fd()?;
+    let device = builder.build_async()?;
+
+    let mut tun_details = format!("MTU: {}", config.tun_mtu);
+    if let Some(ip) = config.tun_ipv4 {
+        tun_details.push_str(&format!(", IPv4: {}", ip));
+    }
+    if let Some(ip) = config.tun_ipv6 {
+        tun_details.push_str(&format!(", IPv6: {}", ip));
+    }
+    info!("Starting TUN endpoint, Name: {}, {}", device.name()?, tun_details);
+
+    let fd = device.into_fd()?;
     let tun = Tun::new(client, secret, fakedns.into());
     let handle = tokio::spawn(async move {
         let shutdown_signal = async {
@@ -199,7 +208,7 @@ async fn start_tun<I: Initiator>(
 
         tun.run(fd, shutdown_signal)
             .await
-            .expect("SOCKS server failed to run");
+            .expect("TUN device failed to run");
     });
 
     Ok(handle)
