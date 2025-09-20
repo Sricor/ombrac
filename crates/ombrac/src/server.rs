@@ -189,7 +189,6 @@ pub mod datagram {
                         Arc::clone(&datagram),
                         Arc::clone(&outbound_socket),
                         packet.secret,
-                        packet.address, // 将原始address（可能带域名）传进去
                         Arc::clone(&config),
                     ));
 
@@ -233,8 +232,6 @@ pub mod datagram {
         datagram: Arc<Datagram<U>>,
         udp_socket: Arc<UdpSocket>,
         session_secret: Secret,
-        // 传入客户端请求的原始地址，而不是解析后的IP
-        original_address: Address,
         config: Arc<UdpHandlerConfig>,
     ) where
         U: Unreliable,
@@ -242,11 +239,14 @@ pub mod datagram {
         let mut buf = vec![0u8; config.buffer_size];
         loop {
             // 这个任务的生命周期由NAT表的sweeper通过abort来管理，所以不需要内部超时
+            
             match udp_socket.recv_from(&mut buf).await {
-                Ok((n, _from_addr)) => {
+                Ok((n, from_addr)) => {
+                    let response_address = Address::from(from_addr); 
+
                     let response_packet = Associate::with(
                         session_secret,
-                        original_address.clone(),
+                        response_address,
                         Bytes::copy_from_slice(&buf[..n]),
                     );
 
