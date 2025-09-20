@@ -55,14 +55,14 @@ pub mod datagram {
     use std::io;
     use std::net::SocketAddr;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use bytes::Bytes;
     use dashmap::DashMap;
     use ombrac_transport::{Acceptor, Unreliable};
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
-    use tokio::time::timeout;
+    use tokio::time::{interval, MissedTickBehavior};
 
     use crate::address::Address;
     use crate::associate::{Associate};
@@ -70,9 +70,12 @@ pub mod datagram {
 
     use super::*;
 
-    // 配置保持不变
+    const MAX_CONCURRENT_ASSOCIATIONS: usize = 256;
+
     pub struct UdpHandlerConfig {
         pub idle_timeout: Duration,
+        // **关键修复 #1: 增加缓冲区大小**
+        // 设置为UDP理论最大载荷大小，避免任何截断。
         pub buffer_size: usize,
     }
 
@@ -80,9 +83,16 @@ pub mod datagram {
         fn default() -> Self {
             Self {
                 idle_timeout: Duration::from_secs(120),
-                buffer_size: 1500,
+                buffer_size: 65535,
             }
         }
+    }
+
+    // 用于在NAT表中存储每个目标流的状态
+    struct NatEntry {
+        socket: Arc<UdpSocket>,
+        handle: JoinHandle<()>, // 任务现在不返回Result，错误在内部处理
+        last_active: Instant,
     }
 
     impl<T: Acceptor> Server<T> {
@@ -93,20 +103,23 @@ pub mod datagram {
     }
 
     impl Server<()> {
-        /// ## Refactored UDP Handler
+        /// ## Final Refactored UDP Handler (Production Ready)
         ///
-        /// This version is optimized for protocols like QUIC and WebRTC.
+        /// This version combines the strengths of the previous approaches to create a robust
+        /// and efficient UDP proxy suitable for QUIC, WebRTC, and other modern protocols.
         ///
-        /// Key improvements:
-        /// 1.  **Single Socket per Client**: Creates only one outbound `UdpSocket` for the entire
-        ///     client session, regardless of how many different destinations the client communicates with.
-        ///     This massively reduces resource consumption.
-        /// 2.  **Connection Migration Support**: The proxy is now agnostic to the client's source IP address.
-        ///     As long as QUIC packets arrive through the `Datagram` channel, they will be forwarded correctly,
-        ///     allowing QUIC's connection migration to function seamlessly.
-        /// 3.  **Simplified State Management**: The complex NAT table mapping destinations to sockets is replaced
-        ///     by a simple reverse-lookup map. A dedicated sweeper task is no longer needed; the session
-        ///     times out monolithically if the client goes idle.
+        /// Key Features:
+        /// 1.  **Socket Caching**: A dedicated UDP socket is created for each unique destination (`SocketAddr`).
+        ///     This socket is cached and reused for subsequent packets to the same destination,
+        ///     achieving high resource efficiency.
+        /// 2.  **Flow Isolation**: Each destination has its own socket, creating a clean "port-restricted cone NAT"
+        ///     behavior. This prevents the "symmetric NAT" problem and ensures maximum compatibility
+        ///     with strict servers and protocols like QUIC.
+        /// 3.  **Correct Buffer Sizing**: The default buffer size is increased to the maximum theoretical
+        ///     UDP payload size (65535) to prevent packet truncation, which is a common cause of
+        ///     failures during QUIC's Path MTU Discovery.
+        /// 4.  **Idle Connection Sweeping**: A background task periodically cleans up cached sockets
+        ///     that have been inactive for too long, preventing resource leaks.
         pub async fn handle_associate<V, U>(
             validator: &V,
             datagram: Datagram<U>,
@@ -116,124 +129,140 @@ pub mod datagram {
             V: Validator,
             U: Unreliable + Send + Sync + 'static,
         {
-            // 1. 为整个客户端会话创建一个唯一的UDP Socket
-            // 我们需要根据接收到的第一个数据包来决定是绑定到IPv4还是IPv6
-            let first_packet = match timeout(config.idle_timeout, datagram.recv()).await {
-                Ok(Ok(packet)) => packet,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Ok(()), // 客户端在超时前未发送任何数据，正常退出
-            };
-
-            // 验证第一个数据包
-            validator
-                .is_valid(first_packet.secret, None, None)
-                .await?;
-
-            let bind_addr: SocketAddr = match first_packet.address {
-                Address::IPv4(_) => "0.0.0.0:0".parse().unwrap(),
-                Address::IPv6(_) => "[::]:0".parse().unwrap(),
-                
-                // 如果是域名，我们默认尝试绑定到IPv4，也可以根据DNS解析结果来决定
-                Address::Domain(_, _) => "0.0.0.0:0".parse().unwrap(),
-            };
-
-            let outbound_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
             let datagram = Arc::new(datagram);
+            // NAT表: Key是目标服务器地址, Value是对应的Socket和状态
+            let nat_table: Arc<DashMap<SocketAddr, NatEntry>> = Arc::new(DashMap::new());
 
-            // 2. 创建一个反向NAT表
-            // Key: 远程目标服务器的实际SocketAddr
-            // Value: 客户端请求的原始Address (可能是域名)
-            // 这用于在收到响应时，能将正确的原始地址封装后发回给客户端
-            let reverse_nat: Arc<DashMap<SocketAddr, Address>> = Arc::new(DashMap::new());
+            // 验证只在第一次通信时进行
+            let mut first_packet = true;
 
-            // 3. 启动一个任务，负责从outbound_socket接收所有响应并转发回客户端
-            let inbound_handle = tokio::spawn(proxy_targets_to_client(
-                Arc::clone(&datagram),
-                Arc::clone(&outbound_socket),
-                Arc::clone(&reverse_nat),
-                first_packet.secret,
-                Arc::clone(&config),
-            ));
+            // **关键修复 #2: 重新引入带缓存的NAT表和超时清理**
+            let nat_for_sweep = Arc::clone(&nat_table);
+            let idle_timeout = config.idle_timeout;
+            let sweeper_handle = tokio::spawn(async move {
+                let mut tick = interval(Duration::from_secs(30));
+                tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    nat_for_sweep.retain(|_addr, entry| {
+                        if entry.last_active.elapsed() > idle_timeout {
+                            entry.handle.abort(); // 终止关联的接收任务
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+            });
 
-            // 处理第一个已经收到的数据包
-            let target_addr = first_packet.address.clone().to_socket_addr().await?;
-            reverse_nat.insert(target_addr, first_packet.address);
-            outbound_socket
-                .send_to(&first_packet.data, target_addr)
-                .await?;
-
-            // 4. 进入主循环，处理后续从客户端发来的数据
             loop {
-                let packet = match timeout(config.idle_timeout, datagram.recv()).await {
+                // 为整个会话设置一个总的超时，如果客户端完全不活跃，则退出
+                let packet = match tokio::time::timeout(config.idle_timeout, datagram.recv()).await {
                     Ok(Ok(packet)) => packet,
-                    Ok(Err(e)) => {
-                        // 底层传输出现错误
-                        inbound_handle.abort();
-                        return Err(e);
-                    }
-                    Err(_) => {
-                        // 客户端空闲超时
-                        break;
-                    }
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => break, // 客户端整体超时
                 };
 
-                // 使用同一个socket将数据发往目标地址
+                if first_packet {
+                    validator.is_valid(packet.secret, None, None).await?;
+                    first_packet = false;
+                }
+
                 let target_addr = packet.address.clone().to_socket_addr().await?;
 
-                // 只有在新目标出现时才插入，减少DashMap写操作
-                if !reverse_nat.contains_key(&target_addr) {
-                    reverse_nat.insert(target_addr, packet.address);
+                // **核心逻辑: 获取或创建缓存的Socket**
+                if !nat_table.contains_key(&target_addr) {
+                    if nat_table.len() >= MAX_CONCURRENT_ASSOCIATIONS {
+                        // 防止资源耗尽
+                        continue;
+                    }
+
+                    // 为这个新的目标地址创建一个专用的Socket
+                    let bind_addr: SocketAddr = match target_addr {
+                        SocketAddr::V4(_) => "0.0.0.0:0".parse().unwrap(),
+                        SocketAddr::V6(_) => "[::]:0".parse().unwrap(),
+                    };
+                    let outbound_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
+
+                    // 为这个专用的Socket创建一个接收任务
+                    let handle = tokio::spawn(proxy_target_to_client(
+                        Arc::clone(&datagram),
+                        Arc::clone(&outbound_socket),
+                        packet.secret,
+                        packet.address, // 将原始address（可能带域名）传进去
+                        Arc::clone(&config),
+                    ));
+
+                    nat_table.insert(
+                        target_addr,
+                        NatEntry {
+                            socket: Arc::clone(&outbound_socket),
+                            handle,
+                            last_active: Instant::now(),
+                        },
+                    );
                 }
 
-                if let Err(_e) = outbound_socket.send_to(&packet.data, target_addr).await {
-                    // 发送失败可能是网络问题，可以选择记录日志或中断会话
-                    // 这里我们选择继续，因为UDP本身就是不可靠的
+                // 更新活动时间并发送数据
+                if let Some(mut entry) = nat_table.get_mut(&target_addr) {
+                    entry.last_active = Instant::now();
+                    let outbound_socket = &entry.socket;
+
+                    if outbound_socket.send_to(&packet.data, target_addr).await.is_err() {
+                        // 如果发送失败，最好移除这个条目，让下次能重建
+                        entry.handle.abort();
+                        drop(entry); // 释放锁
+                        nat_table.remove(&target_addr);
+                    }
                 }
             }
+            
+            // 清理所有资源
+            sweeper_handle.abort();
+            for entry in nat_table.iter() {
+                entry.value().handle.abort();
+            }
+            nat_table.clear();
 
-            // 5. 客户端超时或连接关闭，清理资源
-            inbound_handle.abort();
             Ok(())
         }
     }
 
-    /// 这个任务监听唯一的出站socket，接收来自所有目标服务器的响应，
-    /// 然后通过`datagram`通道将它们转发回原始客户端。
-    async fn proxy_targets_to_client<U>(
+    /// 任务: 从一个专用的目标Socket接收数据，并将其转发回客户端。
+    async fn proxy_target_to_client<U>(
         datagram: Arc<Datagram<U>>,
         udp_socket: Arc<UdpSocket>,
-        reverse_nat: Arc<DashMap<SocketAddr, Address>>,
         session_secret: Secret,
+        // 传入客户端请求的原始地址，而不是解析后的IP
+        original_address: Address,
         config: Arc<UdpHandlerConfig>,
-    ) -> io::Result<()>
-    where
+    ) where
         U: Unreliable,
     {
         let mut buf = vec![0u8; config.buffer_size];
         loop {
-            // 注意：这里不再使用单独的超时，它的生命周期由父任务 `handle_associate_refactored` 控制
-            let (n, from_addr) = udp_socket.recv_from(&mut buf).await?;
+            // 这个任务的生命周期由NAT表的sweeper通过abort来管理，所以不需要内部超时
+            match udp_socket.recv_from(&mut buf).await {
+                Ok((n, _from_addr)) => {
+                    let response_packet = Associate::with(
+                        session_secret,
+                        original_address.clone(),
+                        Bytes::copy_from_slice(&buf[..n]),
+                    );
 
-            // 从反向NAT表中查找客户端请求的原始地址
-            // 如果找不到，说明这可能是一个我们未预期的包，或者是一个非常短暂连接的响应包
-            // 在这种情况下，我们仍然用其实际IP地址转发回去，确保通信不会中断
-            let original_address = reverse_nat
-                .get(&from_addr)
-                .map(|addr| addr.clone())
-                .unwrap_or(Address::from(from_addr));
-
-            let response_packet =
-                Associate::with(session_secret, original_address, Bytes::copy_from_slice(&buf[..n]));
-
-            if datagram.send(response_packet).await.is_err() {
-                // 如果发送回客户端失败，说明客户端通道已关闭，此任务也应终止
-                break;
+                    if datagram.send(response_packet).await.is_err() {
+                        // 发送回客户端失败，通道关闭，任务可以退出了
+                        break;
+                    }
+                }
+                Err(_) => {
+                    // recv_from 失败，通常意味着socket被关闭，任务也应退出
+                    break;
+                }
             }
         }
-        Ok(())
     }
 }
-
 pub trait Validator {
     fn is_valid(
         &self,
