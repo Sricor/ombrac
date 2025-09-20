@@ -19,14 +19,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = [
-    "datagram",
     "endpoint-default",
     "transport-default",
 ]
 
 binary = [
     "tracing",
-    "datagram",
     "transport-quic",
     "endpoint-socks",
     "endpoint-http",
@@ -58,11 +56,6 @@ endpoint-http = [
 
 transport-default = ["transport-quic"]
 transport-quic = ["ombrac-transport/quic"]
-
-datagram = [
-    "ombrac/datagram",
-    "ombrac-transport/datagram"
-]
 
 [dependencies]
 ombrac = { workspace = true }

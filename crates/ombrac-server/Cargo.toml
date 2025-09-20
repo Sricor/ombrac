@@ -17,7 +17,6 @@ path = "bin/main.rs"
 [features]
 default = [
     "tracing",
-    "datagram",
     "transport-default"
 ]
 
@@ -30,11 +29,6 @@ tracing = [
 
 transport-default = ["transport-quic"]
 transport-quic = ["ombrac-transport/quic"]
-
-datagram = [
-    "ombrac/datagram", 
-    "ombrac-transport/datagram"
-]
 
 [dependencies]
 ombrac = { workspace = true }

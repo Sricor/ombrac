@@ -1505,11 +1505,9 @@ name = "ombrac"
 version = "0.5.15"
 dependencies = [
  "bytes",
- "dashmap",
  "futures",
  "ombrac-transport",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

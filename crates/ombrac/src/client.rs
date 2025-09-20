@@ -1,14 +1,10 @@
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 
-#[cfg(feature = "datagram")]
-use ombrac_transport::Unreliable;
 use ombrac_transport::{Initiator, Reliable};
 
 use crate::Secret;
 use crate::address::Address;
-#[cfg(feature = "datagram")]
-use crate::associate::Associate;
 use crate::connect::Connect;
 
 pub struct Client<T> {
@@ -31,13 +27,6 @@ impl<T: Initiator> Client<T> {
         stream.write_all(&request.to_bytes()?).await?;
 
         Ok(Stream(stream))
-    }
-
-    #[cfg(feature = "datagram")]
-    pub async fn associate(&self) -> io::Result<Datagram<impl Unreliable>> {
-        let datagram = self.transport.open_datagram().await?;
-
-        Ok(Datagram(datagram))
     }
 }
 
@@ -81,26 +70,5 @@ mod impl_async_read {
         ) -> Poll<Result<(), io::Error>> {
             AsyncWrite::poll_shutdown(Pin::new(&mut self.get_mut().0), cx)
         }
-    }
-}
-
-#[cfg(feature = "datagram")]
-pub struct Datagram<U: Unreliable>(pub(crate) U);
-
-#[cfg(feature = "datagram")]
-impl<U: Unreliable> Datagram<U> {
-    #[inline]
-    pub async fn send(&self, packet: Associate) -> io::Result<()> {
-        let bytes = packet.to_bytes()?;
-
-        self.0.send(bytes).await
-    }
-
-    #[inline]
-    pub async fn recv(&self) -> io::Result<Associate> {
-        let mut bytes = self.0.recv().await?;
-        let packet = Associate::from_bytes(&mut bytes)?;
-
-        Ok(packet)
     }
 }

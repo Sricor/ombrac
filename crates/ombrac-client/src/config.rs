@@ -70,7 +70,7 @@ pub struct ConfigFile {
     pub logging: LoggingConfig,
 }
 
-#[derive(Deserialize, Serialize, Debug, Parser, Clone)]
+#[derive(Deserialize, Serialize, Debug, Parser, Clone, Default)]
 pub struct EndpointConfig {
     /// The address to bind for the HTTP/HTTPS server
     #[cfg(feature = "endpoint-http")]
@@ -214,7 +214,9 @@ pub struct TunConfig {
 #[cfg(feature = "transport-quic")]
 #[derive(ValueEnum, Clone, Debug, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum TlsMode {
+    #[default]
     Tls,
     MTls,
     Insecure,
@@ -229,19 +231,6 @@ pub struct ServiceConfig {
     pub transport: TransportConfig,
     #[cfg(feature = "tracing")]
     pub logging: LoggingConfig,
-}
-
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "endpoint-http")]
-            http: None,
-            #[cfg(feature = "endpoint-socks")]
-            socks: None,
-            #[cfg(feature = "endpoint-tun")]
-            tun: None,
-        }
-    }
 }
 
 #[cfg(feature = "transport-quic")]
@@ -266,12 +255,6 @@ impl Default for TransportConfig {
 }
 
 #[cfg(feature = "transport-quic")]
-impl Default for TlsMode {
-    fn default() -> Self {
-        Self::Tls
-    }
-}
-
 #[cfg(feature = "endpoint-tun")]
 impl Default for TunConfig {
     fn default() -> Self {

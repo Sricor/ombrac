@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use arc_swap::Guard;
 use quinn::{RecvStream, SendStream};
 
 use crate::Reliable;
@@ -47,17 +44,5 @@ mod impl_async_read {
         ) -> Poll<Result<(), io::Error>> {
             AsyncWrite::poll_shutdown(Pin::new(&mut self.get_mut().0), cx)
         }
-    }
-}
-
-pub struct Datagram(pub(crate) Guard<Arc<quinn::Connection>>);
-
-impl crate::Unreliable for Datagram {
-    async fn send(&self, data: bytes::Bytes) -> std::io::Result<()> {
-        self.0.send_datagram(data).map_err(std::io::Error::other)
-    }
-
-    async fn recv(&self) -> std::io::Result<bytes::Bytes> {
-        Ok(self.0.read_datagram().await?)
     }
 }

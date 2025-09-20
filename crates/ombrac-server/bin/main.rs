@@ -7,8 +7,6 @@ use std::time::Duration;
 use clap::builder::Styles;
 use clap::builder::styling::{AnsiColor, Style};
 use clap::{Parser, ValueEnum};
-#[cfg(feature = "datagram")]
-use ombrac::server::datagram::UdpHandlerConfig;
 use ombrac::server::{SecretValid, Server};
 use ombrac_macros::{error, info};
 use ombrac_transport::Acceptor;
@@ -179,28 +177,6 @@ struct Args {
     )]
     max_streams: u64,
 
-    /// Maximum idle time for a UDP association (in milliseconds)
-    #[cfg(feature = "datagram")]
-    #[clap(
-        long,
-        help_heading = "Transport UDP",
-        value_name = "TIME",
-        default_value = "30000",
-        verbatim_doc_comment
-    )]
-    udp_idle_timeout: u64,
-
-    /// Buffer size for receiving UDP packets (in bytes)
-    #[cfg(feature = "datagram")]
-    #[clap(
-        long,
-        help_heading = "Transport UDP",
-        value_name = "BYTES",
-        default_value = "1500",
-        verbatim_doc_comment
-    )]
-    udp_buffer_size: usize,
-
     /// Logging level (e.g., INFO, WARN, ERROR)
     #[cfg(feature = "tracing")]
     #[clap(
@@ -257,23 +233,11 @@ async fn main() -> io::Result<()> {
 
     let validator = secret_validator_from_args(&args);
 
-    #[cfg(feature = "datagram")]
-    let udp_config = Arc::new(UdpHandlerConfig {
-        idle_timeout: Duration::from_millis(args.udp_idle_timeout),
-        buffer_size: args.udp_buffer_size,
-    });
-
     #[cfg(feature = "transport-quic")]
     {
         info!("Server Listening on {}", args.listen);
         let server = Server::new(quic_server_from_args(&args).await?);
-        run_loop(
-            server.into(),
-            validator,
-            #[cfg(feature = "datagram")]
-            udp_config,
-        )
-        .await?;
+        run_loop(server.into(), validator).await?;
     }
 
     Ok(())
@@ -284,11 +248,7 @@ fn secret_validator_from_args(args: &Args) -> SecretValid {
     SecretValid(secret)
 }
 
-async fn run_loop(
-    server: Arc<Server<impl Acceptor>>,
-    validator: SecretValid,
-    #[cfg(feature = "datagram")] udp_config: Arc<UdpHandlerConfig>,
-) -> io::Result<()> {
+async fn run_loop(server: Arc<Server<impl Acceptor>>, validator: SecretValid) -> io::Result<()> {
     let connect_handle = {
         let server = Arc::clone(&server);
         tokio::spawn(async move {
@@ -306,35 +266,6 @@ async fn run_loop(
         })
     };
 
-    #[cfg(feature = "datagram")]
-    let datagram_handle = {
-        let server = Arc::clone(&server);
-        tokio::spawn(async move {
-            loop {
-                let config = Arc::clone(&udp_config);
-                match server.accept_associate().await {
-                    Ok(datagram) => tokio::spawn(async move {
-                        if let Err(_error) =
-                            Server::handle_associate(&validator, datagram, config).await
-                        {
-                            error!("{_error}");
-                        }
-                    }),
-
-                    Err(error) => return Err::<(), io::Error>(error),
-                };
-            }
-        })
-    };
-
-    #[cfg(feature = "datagram")]
-    {
-        let (connect, datagram) = tokio::join!(connect_handle, datagram_handle);
-        connect??;
-        datagram??;
-    }
-
-    #[cfg(not(feature = "datagram"))]
     connect_handle.await??;
 
     Ok(())

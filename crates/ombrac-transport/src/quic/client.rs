@@ -8,7 +8,7 @@ use ombrac_macros::{debug, error, info, warn};
 use tokio::sync::Mutex;
 
 use crate::quic::TransportConfig;
-use crate::quic::stream::{Datagram, Stream};
+use crate::quic::stream::Stream;
 use crate::{Initiator, Reliable};
 
 use super::{Result, error::Error};
@@ -157,10 +157,6 @@ impl Client {
         }
     }
 
-    pub async fn open_datagram(&self) -> Result<Datagram> {
-        Ok(Datagram(self.connection.load()))
-    }
-
     pub async fn reconnect(&self) -> Result<()> {
         let _lock = self.reconnect_lock.lock().await;
         self.connection.store(Arc::new(self.connect().await?));
@@ -237,10 +233,6 @@ impl Client {
 impl Initiator for Client {
     async fn open_bidirectional(&self) -> io::Result<impl Reliable> {
         Ok(Client::open_bidirectional(self).await?)
-    }
-
-    async fn open_datagram(&self) -> io::Result<impl crate::Unreliable> {
-        Ok(Client::open_datagram(self).await?)
     }
 }
 

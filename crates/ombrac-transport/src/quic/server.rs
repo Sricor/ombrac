@@ -9,8 +9,8 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::watch;
 
 use crate::quic::TransportConfig;
-use crate::quic::stream::{Datagram, Stream};
-use crate::{Acceptor, Reliable, Unreliable};
+use crate::quic::stream::Stream;
+use crate::{Acceptor, Reliable};
 
 use super::error::{Error, Result};
 
@@ -114,7 +114,6 @@ impl Config {
 pub struct Server {
     endpoint: Arc<quinn::Endpoint>,
     stream_receiver: Receiver<Stream>,
-    datagram_receiver: Receiver<Datagram>,
     shutdown_sender: watch::Sender<()>,
 }
 
@@ -133,20 +132,13 @@ impl Server {
         )?);
 
         let (stream_sender, stream_receiver) = async_channel::unbounded();
-        let (datagram_sender, datagram_receiver) = async_channel::unbounded();
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
 
-        tokio::spawn(run(
-            endpoint.clone(),
-            stream_sender,
-            datagram_sender,
-            shutdown_receiver,
-        ));
+        tokio::spawn(run(endpoint.clone(), stream_sender, shutdown_receiver));
 
         Ok(Self {
             endpoint,
             stream_receiver,
-            datagram_receiver,
             shutdown_sender,
         })
     }
@@ -158,13 +150,6 @@ impl Server {
 
     pub async fn accept_bidirectional(&self) -> Result<Stream> {
         match self.stream_receiver.recv().await {
-            Ok(value) => Ok(value),
-            Err(_) => Err(Error::ConnectionClosed),
-        }
-    }
-
-    pub async fn accept_datagram(&self) -> Result<Datagram> {
-        match self.datagram_receiver.recv().await {
             Ok(value) => Ok(value),
             Err(_) => Err(Error::ConnectionClosed),
         }
@@ -194,12 +179,10 @@ impl Server {
 async fn run(
     endpoint: Arc<quinn::Endpoint>,
     stream_sender: Sender<Stream>,
-    datagram_sender: Sender<Datagram>,
     mut shutdown_receiver: watch::Receiver<()>,
 ) {
     loop {
         let stream_sender = stream_sender.clone();
-        let datagram_sender = datagram_sender.clone();
         let endpoint = endpoint.clone();
 
         tokio::select! {
@@ -209,9 +192,6 @@ async fn run(
                         Ok(new_connection) => {
                             info!("New connection from: {}", new_connection.remote_address());
                             let connection = Arc::new(new_connection);
-                            if datagram_sender.send(Datagram(Arc::clone(&connection).into())).await.is_err() {
-                                error!("Datagram receiver dropped, cannot accept new datagram")
-                            };
 
                             loop {
                                 tokio::select! {
@@ -245,9 +225,5 @@ async fn run(
 impl Acceptor for Server {
     async fn accept_bidirectional(&self) -> io::Result<impl Reliable> {
         Ok(Server::accept_bidirectional(self).await?)
-    }
-
-    async fn accept_datagram(&self) -> io::Result<impl Unreliable> {
-        Ok(Server::accept_datagram(self).await?)
     }
 }

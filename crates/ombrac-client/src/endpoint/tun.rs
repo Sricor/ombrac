@@ -2,7 +2,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -11,7 +11,7 @@ use futures::{SinkExt, StreamExt};
 use ombrac::Secret;
 use ombrac::address::Domain;
 use ombrac::client::Client;
-use ombrac::prelude::{Address, Associate};
+use ombrac::prelude::Address;
 use ombrac_macros::{error, info};
 use ombrac_netstack::*;
 use ombrac_transport::Initiator;
@@ -22,8 +22,6 @@ use tun_rs::{
     AsyncDevice,
     async_framed::{BytesCodec, DeviceFramed},
 };
-
-const UDP_SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct Tun<I: Initiator> {
     secret: Secret,
@@ -300,120 +298,9 @@ impl<I: Initiator> Tun<I> {
                         }
                         continue;
                     }
-
-                    if let Some(tx) = self.active_udp_relays.get(&local_addr) {
-                        // 如果存在活动的会话，直接发送数据
-                        if tx.send(data).await.is_err() {
-                            // 发送失败意味着接收端已关闭，移除此会话
-                            debug!("UDP relay for {} is closed, removing.", local_addr);
-                            self.active_udp_relays.remove(&local_addr);
-                        }
-                    } else {
-                        // 如果没有活动会话，则创建一个新的
-                        debug!("Creating new UDP relay for {}", local_addr);
-                        let (tx, rx) = mpsc::channel(128);
-
-                        if tx.send(data).await.is_err() {
-                            error!("Failed to send initial packet to new UDP relay for {}", local_addr);
-                            continue;
-                        }
-
-                        // MODIFIED: 直接向 DashMap 中插入
-                        self.active_udp_relays.insert(local_addr, tx);
-
-                        let self_clone = self.clone();
-                        // MODIFIED: 克隆 Arc 指针，而不是 writer 本身
-                        let tun_writer_clone = Arc::clone(&shared_tun_writer);
-
-                        tokio::spawn(async move {
-                            if let Err(e) = self_clone.udp_relay(self_clone.secret, local_addr, remote_addr, rx, tun_writer_clone).await {
-                                error!("UDP relay for {} failed: {}", local_addr, e);
-                            }
-                            // 当中继结束后，从哈希图中移除
-                            self_clone.active_udp_relays.remove(&local_addr);
-                            debug!("UDP relay for {} has been cleaned up.", local_addr);
-                        });
-                    }
                 }
             }
         }
-    }
-
-    async fn udp_relay(
-        &self,
-        secret: Secret,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
-        mut from_tun: mpsc::Receiver<Bytes>,
-        to_tun: Arc<Mutex<SplitWrite>>,
-    ) -> io::Result<()> {
-        let target_addr = if let Some(entry) = self.fakedns.lookup(&remote_addr.ip()) {
-            let domain = entry.domain.clone();
-            let port = remote_addr.port();
-            Address::Domain(Domain::from_bytes(domain)?, port)
-        } else {
-            Address::from(remote_addr)
-        };
-
-        info!("Starting UDP relay: {} -> {}", local_addr, target_addr);
-
-        let remote_udp = self.client.associate().await?;
-        let remote_writer = Arc::new(remote_udp);
-        let remote_reader = Arc::clone(&remote_writer);
-
-        let mut last_activity = Instant::now();
-
-        loop {
-            tokio::select! {
-                Some(data) = from_tun.recv() => {
-                    info!("Send {} to target {} ", data.len(), target_addr);
-
-                    last_activity = Instant::now();
-                    let data = Associate::with(secret, target_addr.clone(), data);
-                    let len = data.clone().to_bytes().unwrap().len();
-                    if let Err(e) = remote_writer.send(data).await {
-                        error!("Failed to send UDP packet to remote target {}: {}, len: {}", target_addr, e, len);
-                        break;
-                    }
-                }
-
-                result = remote_reader.recv() => {
-                    match result {
-                        Ok(data) => {
-                            last_activity = Instant::now();
-                            let response_packet = UdpPacket {
-                                data: Packet::new(data.data),
-                                local_addr: remote_addr,
-                                remote_addr: local_addr,
-                            };
-
-                            info!(
-                                "Relaying response to TUN. Packet details: local(src)={}, remote(dst)={}", 
-                                response_packet.local_addr, 
-                                response_packet.remote_addr
-                            );
-
-                            // MODIFIED: 在发送前异步锁定 writer
-                            let mut writer_guard = to_tun.lock().await;
-                            if writer_guard.send(response_packet).await.is_err() {
-                                error!("Failed to send UDP response packet back to TUN from {}", remote_addr);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error receiving UDP packet from remote {}: {}", target_addr, e);
-                            break;
-                        }
-                    }
-                }
-
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(last_activity + UDP_SESSION_TIMEOUT)) => {
-                    info!("UDP relay for {} timed out due to inactivity.", local_addr);
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
