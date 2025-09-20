@@ -91,12 +91,20 @@ pub struct Datagram<U: Unreliable>(pub(crate) U);
 impl<U: Unreliable> Datagram<U> {
     #[inline]
     pub async fn send(&self, packet: Associate) -> io::Result<()> {
-        self.0.send(packet.to_bytes()?).await
+        eprintln!("SEND {:?}", packet.data);
+        eprintln!("\n");
+        let bytes = packet.to_bytes()?;
+        
+        self.0.send(bytes).await
     }
 
     #[inline]
     pub async fn recv(&self) -> io::Result<Associate> {
         let mut bytes = self.0.recv().await?;
-        Associate::from_bytes(&mut bytes)
+        let packet = Associate::from_bytes(&mut bytes)?;
+        eprintln!("SEND {:?}", packet.data);
+        eprintln!("\n");
+
+        Ok(packet)
     }
 }

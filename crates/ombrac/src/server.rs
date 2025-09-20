@@ -124,6 +124,8 @@ pub mod datagram {
             // Shared timestamp to track the last activity for the entire session.
             let last_activity = Arc::new(Mutex::new(Instant::now()));
 
+            let (secret_tx, secret_rx) = tokio::sync::watch::channel(None);
+
             // --- Task 1: Forward traffic from Client -> Target ---
             let client_to_target_handle = {
                 let datagram = Arc::clone(&datagram);
@@ -148,12 +150,12 @@ pub mod datagram {
                                 };
 
                                 // Validate the secret only on the first packet of the session.
-                                if !is_validated {
-                                    if let Err(e) = validator.is_valid(packet.secret, None, None).await {
-                                        return Err(e);
-                                    }
-                                    is_validated = true;
-                                }
+                            if secret_tx.is_closed() {
+                                validator.is_valid(packet.secret, None, None).await?;
+                                // Validation successful, send the secret to the other task.
+                                // This also marks the secret as validated.
+                                secret_tx.send(Some(packet.secret)).ok();
+                            }
 
                                 let target_addr = match packet.address.to_socket_addr().await {
                                     Ok(addr) => addr,
@@ -186,10 +188,18 @@ pub mod datagram {
                 let last_activity = Arc::clone(&last_activity);
                 let token = shutdown_token.clone();
                 let buffer_size = config.buffer_size;
+                let mut secret_rx = secret_rx.clone();
 
                 tokio::spawn(async move {
                     // The secret is validated in the other task. We assume it remains constant.
-                    let session_secret = Secret::default(); // Note: This needs a better way to share the secret.
+                    let session_secret = match secret_rx.wait_for(|s| s.is_some()).await {
+                        Ok(guard) => guard.unwrap(),
+                        Err(_) => {
+                            // The sender was dropped without sending a secret, meaning task 1 failed.
+                            return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "Secret validation failed"));
+                        }
+                    };
+
                     let mut buf = vec![0u8; buffer_size];
 
                     loop {
