@@ -9,10 +9,6 @@ repository.workspace = true
 description.workspace = true
 readme = "../../README.md"
 
-[[bin]]
-name = "ombrac-client"
-path = "bin/main.rs"
-required-features = ["binary"]
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -54,6 +50,7 @@ endpoint-http = [
     "http-body-util"
 ]
 
+
 transport-default = ["transport-quic"]
 transport-quic = ["ombrac-transport/quic"]
 
@@ -67,6 +64,7 @@ serde = { workspace = true, features = ["derive"] }
 figment = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 blake3 = { workspace = true }
+arc-swap = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal", "sync"] }
 tokio-util = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "color", "help", "usage", "error-context", "suggestions"] }

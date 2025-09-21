@@ -17,6 +17,7 @@ ombrac-transport = { workspace = true }
 
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net"] }
+tokio-util = { workspace = true, features = ["codec"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

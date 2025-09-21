@@ -1,41 +1,46 @@
 use std::sync::Arc;
 
-use ombrac::Secret;
-use ombrac::client::Client;
-use ombrac_macros::{debug, info};
-use ombrac_transport::{Initiator, Unreliable};
 use socks_lib::io::{self, AsyncRead, AsyncWrite};
 use socks_lib::v5::server::Handler;
-use socks_lib::v5::{Address as SocksAddress, Request, Stream};
+use socks_lib::v5::{Request, Stream};
 
-pub struct CommandHandler<I: Initiator + Unreliable> {
-    ombrac_client: Arc<Client<I>>,
-    secret: Secret,
+use ombrac_macros::{debug, info};
+use ombrac_transport::{Connection, Initiator};
+
+use crate::client::Client;
+
+pub struct CommandHandler<T, C> {
+    client: Arc<Client<T, C>>,
 }
 
-impl<I: Initiator + Unreliable> CommandHandler<I> {
-    pub fn new(inner: Arc<Client<I>>, secret: Secret) -> Self {
-        Self {
-            ombrac_client: inner,
-            secret,
-        }
+impl<T, C> CommandHandler<T, C>
+where
+    T: Initiator<Connection = C>,
+    C: Connection,
+{
+    pub fn new(client: Arc<Client<T, C>>) -> Self {
+        Self { client }
     }
 
     async fn handle_connect(
         &self,
-        address: SocksAddress,
+        address: socks_lib::v5::Address,
         stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> io::Result<(u64, u64)> {
         let addr = util::socks_to_ombrac_addr(address)?;
-        let mut outbound = self.ombrac_client.connect(addr, self.secret).await?;
-        ombrac::io::util::copy_bidirectional(stream, &mut outbound).await
+        let mut outbound = self.client.open_bidirectional(addr).await?;
+        tokio::io::copy_bidirectional(stream, &mut outbound).await
     }
 }
 
-impl<I: Initiator + Unreliable> Handler for CommandHandler<I> {
-    async fn handle<T>(&self, stream: &mut Stream<T>, request: Request) -> io::Result<()>
+impl<T, C> Handler for CommandHandler<T, C>
+where
+    T: Initiator<Connection = C>,
+    C: Connection,
+{
+    async fn handle<S>(&self, stream: &mut Stream<S>, request: Request) -> io::Result<()>
     where
-        T: AsyncRead + AsyncWrite + Unpin + Send + Sync,
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync,
     {
         debug!("SOCKS Request: {:?}", request);
 
@@ -66,20 +71,20 @@ impl<I: Initiator + Unreliable> Handler for CommandHandler<I> {
 }
 
 mod util {
+    use ombrac::protocol::Address as OmbracAddress;
+
     use std::io;
 
-    use ombrac::address::{Address as OmbracAddress, Domain as OmbracDoamin};
     use socks_lib::v5::Address as Socks5Address;
 
     #[inline]
     pub(super) fn socks_to_ombrac_addr(addr: Socks5Address) -> io::Result<OmbracAddress> {
         let result = match addr {
-            Socks5Address::IPv4(value) => OmbracAddress::IPv4(value),
-            Socks5Address::IPv6(value) => OmbracAddress::IPv6(value),
-            Socks5Address::Domain(domain, port) => OmbracAddress::Domain(
-                OmbracDoamin::from_bytes(domain.as_bytes().to_owned())?,
-                port,
-            ),
+            Socks5Address::IPv4(value) => OmbracAddress::SocketV4(value),
+            Socks5Address::IPv6(value) => OmbracAddress::SocketV6(value),
+            Socks5Address::Domain(domain, port) => {
+                OmbracAddress::Domain(domain.as_bytes().to_owned(), port)
+            }
         };
 
         Ok(result)

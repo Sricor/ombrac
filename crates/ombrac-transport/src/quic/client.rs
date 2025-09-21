@@ -3,17 +3,10 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, Guard};
-use bytes::Bytes;
-use ombrac_macros::{debug, error, info, warn};
-use tokio::sync::Mutex;
+use ombrac_macros::{debug, info, warn};
 
+use super::Result;
 use crate::quic::TransportConfig;
-use crate::quic::protocol::{decode_addr, encode_addr};
-use crate::quic::stream::Stream;
-use crate::{DatagramReceiver, DatagramSender, Initiator, Reliable};
-
-use super::{Result, error::Error};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -101,12 +94,10 @@ impl Config {
 pub struct Client {
     config: Config,
     endpoint: quinn::Endpoint,
-    connection: ArcSwap<quinn::Connection>,
-    reconnect_lock: Mutex<()>,
 }
 
 impl Client {
-    pub async fn new(config: Config, socket: UdpSocket) -> Result<Self> {
+    pub fn new(socket: UdpSocket, config: Config) -> Result<Self> {
         let client_config = config.build_client_config()?;
         let endpoint_config = config.build_endpoint_config()?;
 
@@ -120,153 +111,11 @@ impl Client {
         )?;
         endpoint.set_default_client_config(client_config);
 
-        let connection = endpoint
-            .connect(config.server_addr, &config.server_name)?
-            .await?;
-
-        info!(
-            "Initial connection established with {} at {}",
-            config.server_addr, &config.server_name
-        );
-
-        let connection = ArcSwap::new(Arc::new(connection));
-
-        Ok(Self {
-            config,
-            endpoint,
-            connection,
-            reconnect_lock: Mutex::new(()),
-        })
+        Ok(Self { config, endpoint })
     }
 
-    pub async fn open_bidirectional(&self) -> Result<Stream> {
-        let conn_arc = self.connection.load();
-        match conn_arc.open_bi().await {
-            Ok((send, recv)) => Ok(Stream(send, recv)),
-            Err(quinn::ConnectionError::ApplicationClosed(_))
-            | Err(quinn::ConnectionError::ConnectionClosed(_))
-            | Err(quinn::ConnectionError::LocallyClosed)
-            | Err(quinn::ConnectionError::Reset)
-            | Err(quinn::ConnectionError::TimedOut) => {
-                warn!("Connection lost, attempting to reconnect");
-                let (send, recv) = self.reconnect_and_open_bi(conn_arc).await?;
-                Ok(Stream(send, recv))
-            }
-            Err(e) => {
-                error!("Unexpected connection error: {:?}", e);
-                Err(Error::QuinnConnection(e))
-            }
-        }
-    }
-
-    pub async fn send_datagram(&self, dest_addr: SocketAddr, payload: &[u8]) -> Result<()> {
-        info!(
-            "Client Send Datagram, dest_addr: {}, playload: {}",
-            dest_addr,
-            payload.len()
-        );
-
-        let mut datagram_buf = encode_addr(&dest_addr);
-        datagram_buf.extend_from_slice(payload);
-        let datagram = bytes::Bytes::from(datagram_buf);
-
-        loop {
-            let conn_arc = self.connection.load();
-            match conn_arc.send_datagram(datagram.clone()) {
-                Ok(()) => return Ok(()),
-                Err(quinn::SendDatagramError::ConnectionLost(e)) => {
-                    warn!("Connection lost on send, attempting to reconnect: {}", e);
-                    self.reconnect_on_error(conn_arc).await?;
-                }
-                Err(e) => {
-                    error!("Failed to send datagram: {:?}", e);
-                    return Err(Error::QuinnSendDatagram(e));
-                }
-            }
-        }
-    }
-
-    pub async fn read_datagram(&self) -> Result<(SocketAddr, Bytes)> {
-        loop {
-            let conn_arc = self.connection.load();
-            match conn_arc.read_datagram().await {
-                Ok(datagram) => {
-                    if let Some((addr, payload)) = decode_addr(&datagram) {
-                        info!(
-                            "Client Read Datagram, addr: {}, playload: {}",
-                            addr,
-                            payload.len()
-                        );
-                        return Ok((addr, Bytes::copy_from_slice(payload)));
-                    } else {
-                        warn!("Received invalid datagram from server");
-                    }
-                }
-                Err(quinn::ConnectionError::ApplicationClosed(_))
-                | Err(quinn::ConnectionError::ConnectionClosed(_))
-                | Err(quinn::ConnectionError::LocallyClosed)
-                | Err(quinn::ConnectionError::Reset)
-                | Err(quinn::ConnectionError::TimedOut) => {
-                    warn!("Connection lost on read, attempting to reconnect");
-                    self.reconnect_on_error(conn_arc).await?;
-                }
-                Err(e) => {
-                    error!("Unexpected connection error on read: {:?}", e);
-                    return Err(Error::QuinnConnection(e));
-                }
-            }
-        }
-    }
-
-    async fn reconnect_on_error(&self, old_conn_arc: Guard<Arc<quinn::Connection>>) -> Result<()> {
-        let _lock = self.reconnect_lock.lock().await;
-        if !Arc::ptr_eq(&*old_conn_arc, &*self.connection.load()) {
-            return Ok(());
-        }
-
-        self.connection.store(Arc::new(self.connect().await?));
-
-        Ok(())
-    }
-
-    pub async fn reconnect(&self) -> Result<()> {
-        let _lock = self.reconnect_lock.lock().await;
-        self.connection.store(Arc::new(self.connect().await?));
-        Ok(())
-    }
-
-    /// Close all of this endpoint's connections immediately and cease accepting new connections.
-    pub fn close(&self) {
-        self.endpoint.close(0u32.into(), b"Client closed");
-    }
-
-    /// Wait for all connections on the endpoint to be cleanly shut down
-    pub async fn wait_idle(&self) -> () {
-        self.endpoint.wait_idle().await;
-    }
-
-    /// Get the local SocketAddr the underlying socket is bound to
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.endpoint.local_addr()?)
-    }
-
-    /// Switch to a new UDP socket
-    pub fn rebind(&self, socket: UdpSocket) -> Result<()> {
-        Ok(self.endpoint.rebind(socket)?)
-    }
-
-    async fn reconnect_and_open_bi(
-        &self,
-        old_conn_arc: Guard<Arc<quinn::Connection>>,
-    ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
-        let _lock = self.reconnect_lock.lock().await;
-
-        if !Arc::ptr_eq(&*old_conn_arc, &*self.connection.load()) {
-            return Ok(self.connection.load().open_bi().await?);
-        }
-        self.connection.store(Arc::new(self.connect().await?));
-
-        Ok(self.connection.load().open_bi().await?)
     }
 
     async fn connect(&self) -> Result<quinn::Connection> {
@@ -302,21 +151,15 @@ impl Client {
     }
 }
 
-impl Initiator for Client {
-    async fn open_bidirectional(&self) -> io::Result<impl Reliable> {
-        Ok(Client::open_bidirectional(self).await?)
-    }
-}
+impl crate::Initiator for Client {
+    type Connection = quinn::Connection;
 
-impl DatagramSender for Client {
-    async fn send_datagram(&self, dest: SocketAddr, data: &[u8]) -> io::Result<()> {
-        Ok(self.send_datagram(dest, data).await?)
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        Client::local_addr(&self).map_err(io::Error::other)
     }
-}
 
-impl DatagramReceiver for Client {
-    async fn read_datagram(&self) -> io::Result<(SocketAddr, bytes::Bytes)> {
-        Ok(self.read_datagram().await?)
+    async fn connect(&self) -> io::Result<Self::Connection> {
+        Client::connect(&self).await.map_err(io::Error::other)
     }
 }
 

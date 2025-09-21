@@ -1,76 +1,115 @@
 use std::io;
+use std::marker::PhantomData;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ombrac_transport::Unreliable;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use ombrac::Secret;
-use ombrac::client::Client;
 use ombrac_macros::{error, info, warn};
-use ombrac_transport::Initiator;
 #[cfg(feature = "transport-quic")]
 use ombrac_transport::quic::{
-    TransportConfig as QuicTransportConfig,
+    Connection as QuicConnection, TransportConfig as QuicTransportConfig,
     client::{Client as QuicClient, Config as QuicConfig},
 };
+use ombrac_transport::{Connection, Initiator};
 
-#[cfg(feature = "endpoint-tun")]
-use crate::config::TunConfig;
+use crate::client::Client;
 use crate::config::{ServiceConfig, TlsMode};
 
-pub struct Service {
-    handles: Vec<JoinHandle<()>>,
-    shutdown_tx: broadcast::Sender<()>,
+pub trait ServiceBuilder {
+    type Initiator: Initiator<Connection = Self::Connection>;
+    type Connection: Connection;
+
+    fn build(
+        config: &Arc<ServiceConfig>,
+    ) -> impl Future<Output = io::Result<Arc<Client<Self::Initiator, Self::Connection>>>> + Send;
 }
 
-impl Service {
-    pub async fn build(config: &ServiceConfig) -> io::Result<Self> {
+pub struct QuicServiceBuilder;
+
+impl ServiceBuilder for QuicServiceBuilder {
+    type Initiator = QuicClient;
+    type Connection = QuicConnection;
+
+    async fn build(
+        config: &Arc<ServiceConfig>,
+    ) -> io::Result<Arc<Client<Self::Initiator, Self::Connection>>> {
+        let transport = quic_client_from_config(config).await?;
+        let secret = *blake3::hash(config.secret.as_bytes()).as_bytes();
+        let client = Arc::new(Client::new(transport, secret, None).await?);
+        Ok(client)
+    }
+}
+
+pub struct Service<T, C>
+where
+    T: Initiator<Connection = C>,
+    C: Connection,
+{
+    handles: Vec<JoinHandle<()>>,
+    shutdown_tx: broadcast::Sender<()>,
+    _transport: PhantomData<T>,
+    _connection: PhantomData<C>,
+}
+
+impl<T, C> Service<T, C>
+where
+    T: Initiator<Connection = C>,
+    C: Connection,
+{
+    pub async fn build<Builder>(config: Arc<ServiceConfig>) -> io::Result<Self>
+    where
+        Builder: ServiceBuilder<Initiator = T, Connection = C>,
+    {
         #[cfg(feature = "tracing")]
         setup_logging(&config.logging);
 
         let mut handles = Vec::new();
+        let client = Builder::build(&config).await?;
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        #[cfg(feature = "transport-quic")]
-        {
-            let secret = *blake3::hash(config.secret.as_bytes()).as_bytes();
-            let transport = quic_client_from_config(config).await?;
-            let client = Arc::new(Client::new(transport));
-
-            // Start HTTP endpoint if configured
-            #[cfg(feature = "endpoint-http")]
-            if let Some(address) = config.endpoint.http {
-                let handle =
-                    start_http_server(client.clone(), secret, address, shutdown_tx.subscribe())
-                        .await?;
-                handles.push(handle);
-            }
-
-            // Start SOCKS endpoint if configured
-            #[cfg(feature = "endpoint-socks")]
-            if let Some(address) = config.endpoint.socks {
-                let handle =
-                    start_socks_server(client.clone(), secret, address, shutdown_tx.subscribe())
-                        .await?;
-                handles.push(handle);
-            }
-
-            #[cfg(feature = "endpoint-tun")]
-            if let Some(config) = &config.endpoint.tun {
-                if config.tun_ipv4.is_some() || config.tun_ipv6.is_some() {
-                    let handle =
-                        start_tun_device(client, secret, config, shutdown_tx.subscribe()).await?;
-                    handles.push(handle);
-                }
-            }
+        // Start HTTP endpoint if configured
+        #[cfg(feature = "endpoint-http")]
+        if config.endpoint.http.is_some() {
+            handles.push(
+                Self::spawn_http_accept_loop(
+                    config.clone(),
+                    client.clone(),
+                    shutdown_tx.subscribe(),
+                )
+                .await,
+            );
         }
+
+        // Start SOCKS endpoint if configured
+        #[cfg(feature = "endpoint-socks")]
+        if config.endpoint.socks.is_some() {
+            handles.push(
+                Self::spawn_socks_accept_loop(
+                    config.clone(),
+                    client.clone(),
+                    shutdown_tx.subscribe(),
+                )
+                .await,
+            );
+        }
+
+        // #[cfg(feature = "endpoint-tun")]
+        // if let Some(config) = &config.endpoint.tun {
+        //     if config.tun_ipv4.is_some() || config.tun_ipv6.is_some() {
+        //         let handle =
+        //             start_tun_device(client, secret, config, shutdown_tx.subscribe()).await?;
+        //         handles.push(handle);
+        //     }
+        // }
 
         Ok(Service {
             handles,
             shutdown_tx,
+            _transport: PhantomData::default(),
+            _connection: PhantomData::default(),
         })
     }
 
@@ -84,11 +123,71 @@ impl Service {
         }
         warn!("Service shutdown complete");
     }
+
+    #[cfg(feature = "endpoint-http")]
+    async fn spawn_http_accept_loop(
+        config: Arc<ServiceConfig>,
+        ombrac: Arc<Client<T, C>>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> JoinHandle<()> {
+        use crate::endpoint::http::Server as HttpServer;
+
+        tokio::spawn(async move {
+            let bind_addr = config.endpoint.http.unwrap();
+            let socket = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
+
+            info!("Starting HTTP/HTTPS endpoint, listening on {bind_addr}");
+
+            HttpServer::new(ombrac)
+                .accept_loop(socket, async {
+                    let _ = shutdown_rx.recv().await;
+                })
+                .await
+                .expect("HTTP server failed to run");
+        })
+    }
+
+    #[cfg(feature = "endpoint-socks")]
+    async fn spawn_socks_accept_loop(
+        config: Arc<ServiceConfig>,
+        ombrac: Arc<Client<T, C>>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> JoinHandle<()> {
+        use crate::endpoint::socks::CommandHandler;
+        use socks_lib::v5::server::auth::NoAuthentication;
+        use socks_lib::v5::server::{Config as SocksConfig, Server as SocksServer};
+
+        tokio::spawn(async move {
+            let bind_addr = config.endpoint.socks.unwrap();
+            let socket = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
+
+            info!("Starting SOCKS5 endpoint, listening on {bind_addr}");
+
+            let socks_config = Arc::new(SocksConfig::new(
+                NoAuthentication,
+                CommandHandler::new(ombrac),
+            ));
+            SocksServer::run(socket, socks_config, async {
+                let _ = shutdown_rx.recv().await;
+            })
+            .await
+            .expect("SOCKS server failed to run");
+        })
+    }
 }
 
 #[cfg(feature = "tracing")]
 fn setup_logging(config: &crate::config::LoggingConfig) {
-    let log_level: tracing::Level = config.log_level.as_deref().unwrap().parse().unwrap();
+    let log_level = config
+        .log_level
+        .as_deref()
+        .map(|level_str| {
+            level_str.parse().unwrap_or_else(|_| {
+                warn!("Invalid log level '{}', defaulting to WARN", level_str);
+                tracing::Level::WARN
+            })
+        })
+        .unwrap_or(tracing::Level::WARN);
 
     let subscriber = tracing_subscriber::fmt()
         .with_thread_ids(true)
@@ -111,118 +210,64 @@ fn setup_logging(config: &crate::config::LoggingConfig) {
     subscriber.with_writer(non_blocking).init();
 }
 
-#[cfg(feature = "endpoint-http")]
-async fn start_http_server<I: Initiator + Unreliable>(
-    ombrac: Arc<Client<I>>,
-    secret: Secret,
-    address: SocketAddr,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) -> io::Result<JoinHandle<()>> {
-    use crate::endpoint::http::Server as HttpServer;
-    use tokio::net::TcpListener;
+// #[cfg(feature = "endpoint-tun")]
+// async fn start_tun_device<T, C>(
+//     ombrac: Arc<Client<T, C>>,
+//     config: &TunConfig,
+//     mut shutdown_rx: broadcast::Receiver<()>,
+// ) -> io::Result<JoinHandle<()>> {
+//     use crate::endpoint::tun::Tun;
+//     // use crate::endpoint::tun::fakedns::FakeDns;
+//     use ipnet::{Ipv4Net, Ipv6Net};
+//     use std::str::FromStr;
 
-    let listener = TcpListener::bind(address).await?;
-    info!("Starting HTTP/HTTPS endpoint, listening on {}", address);
+//     // let fakedns = {
+//     //     let dns_pool = Ipv4Net::from_str(
+//     //         config
+//     //             .dns_pool
+//     //             .clone()
+//     //             .unwrap_or("198.18.0.0/16".to_string())
+//     //             .as_str(),
+//     //     )
+//     //     .unwrap();
+//     //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
+//     // };
 
-    let handle = tokio::spawn(async move {
-        let shutdown_signal = async {
-            let _ = shutdown_rx.recv().await;
-        };
-        HttpServer::run(listener, secret, ombrac, shutdown_signal)
-            .await
-            .expect("HTTP server failed to run");
-    });
+//     let device = {
+//         let mut builder = tun_rs::DeviceBuilder::new();
+//         builder = builder.mtu(config.tun_mtu.unwrap_or(1500));
+//         if let Some(ip_str) = &config.tun_ipv4 {
+//             let ip = Ipv4Net::from_str(&ip_str).unwrap();
+//             builder = builder.ipv4(ip.addr(), ip.netmask(), None);
+//         }
+//         if let Some(ip_str) = &config.tun_ipv6 {
+//             let ip = Ipv6Net::from_str(&ip_str).unwrap();
+//             builder = builder.ipv6(ip.addr(), ip.netmask());
+//         }
+//         builder.build_async()?
+//     };
 
-    Ok(handle)
-}
+//     info!(
+//         "Starting TUN endpoint, Name: {}, MTU: {}, IP: {:?}",
+//         device.name()?,
+//         device.mtu()?,
+//         device.addresses()?
+//     );
 
-#[cfg(feature = "endpoint-socks")]
-async fn start_socks_server<I: Initiator + Unreliable>(
-    ombrac: Arc<Client<I>>,
-    secret: Secret,
-    address: SocketAddr,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) -> io::Result<JoinHandle<()>> {
-    use crate::endpoint::socks::CommandHandler;
-    use socks_lib::net::TcpListener;
-    use socks_lib::v5::server::auth::NoAuthentication;
-    use socks_lib::v5::server::{Config as SocksConfig, Server as SocksServer};
+//     let fd = device.into_fd()?;
+//     let tun = Tun::new(client, secret);
+//     let handle = tokio::spawn(async move {
+//         let shutdown_signal = async {
+//             let _ = shutdown_rx.recv().await;
+//         };
 
-    let listener = TcpListener::bind(address).await?;
-    info!("Starting SOCKS5 endpoint, listening on {}", address);
+//         tun.run(fd, shutdown_signal)
+//             .await
+//             .expect("TUN device failed to run");
+//     });
 
-    let handle = tokio::spawn(async move {
-        let config = SocksConfig::new(NoAuthentication, CommandHandler::new(ombrac, secret));
-        let shutdown_signal = async {
-            let _ = shutdown_rx.recv().await;
-        };
-        SocksServer::run(listener, config.into(), shutdown_signal)
-            .await
-            .expect("SOCKS server failed to run");
-    });
-
-    Ok(handle)
-}
-
-#[cfg(feature = "endpoint-tun")]
-async fn start_tun_device<I: Initiator + Unreliable>(
-    client: Arc<Client<I>>,
-    secret: Secret,
-    config: &TunConfig,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) -> io::Result<JoinHandle<()>> {
-    use crate::endpoint::tun::Tun;
-    // use crate::endpoint::tun::fakedns::FakeDns;
-    use ipnet::{Ipv4Net, Ipv6Net};
-    use std::str::FromStr;
-
-    // let fakedns = {
-    //     let dns_pool = Ipv4Net::from_str(
-    //         config
-    //             .dns_pool
-    //             .clone()
-    //             .unwrap_or("198.18.0.0/16".to_string())
-    //             .as_str(),
-    //     )
-    //     .unwrap();
-    //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
-    // };
-
-    let device = {
-        let mut builder = tun_rs::DeviceBuilder::new();
-        builder = builder.mtu(config.tun_mtu.unwrap_or(1500));
-        if let Some(ip_str) = &config.tun_ipv4 {
-            let ip = Ipv4Net::from_str(&ip_str).unwrap();
-            builder = builder.ipv4(ip.addr(), ip.netmask(), None);
-        }
-        if let Some(ip_str) = &config.tun_ipv6 {
-            let ip = Ipv6Net::from_str(&ip_str).unwrap();
-            builder = builder.ipv6(ip.addr(), ip.netmask());
-        }
-        builder.build_async()?
-    };
-
-    info!(
-        "Starting TUN endpoint, Name: {}, MTU: {}, IP: {:?}",
-        device.name()?,
-        device.mtu()?,
-        device.addresses()?
-    );
-
-    let fd = device.into_fd()?;
-    let tun = Tun::new(client, secret);
-    let handle = tokio::spawn(async move {
-        let shutdown_signal = async {
-            let _ = shutdown_rx.recv().await;
-        };
-
-        tun.run(fd, shutdown_signal)
-            .await
-            .expect("TUN device failed to run");
-    });
-
-    Ok(handle)
-}
+//     Ok(handle)
+// }
 
 #[cfg(feature = "transport-quic")]
 async fn quic_client_from_config(config: &ServiceConfig) -> io::Result<QuicClient> {
@@ -310,5 +355,5 @@ async fn quic_client_from_config(config: &ServiceConfig) -> io::Result<QuicClien
     quic_config.transport_config(transport_config);
 
     let socket = UdpSocket::bind(bind_addr)?;
-    Ok(QuicClient::new(quic_config, socket).await?)
+    Ok(QuicClient::new(socket, quic_config)?)
 }

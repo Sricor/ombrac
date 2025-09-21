@@ -1,18 +1,12 @@
-use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::{io, net::UdpSocket};
 
 use async_channel::{Receiver, Sender};
-use ombrac_macros::{debug, error, info, warn};
+use ombrac_macros::{debug, error, warn};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use tokio::net::UdpSocket;
 use tokio::sync::watch;
-
-use crate::quic::TransportConfig;
-use crate::quic::protocol::{decode_addr, encode_addr};
-use crate::quic::stream::Stream;
-use crate::{Acceptor, Reliable};
 
 use super::error::{Error, Result};
 
@@ -27,12 +21,6 @@ pub struct Config {
     transport_config: Arc<quinn::TransportConfig>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Config {
     pub fn new() -> Self {
         Self {
@@ -45,7 +33,7 @@ impl Config {
         }
     }
 
-    pub fn transport_config(&mut self, config: TransportConfig) {
+    pub fn transport_config(&mut self, config: crate::quic::TransportConfig) {
         self.transport_config = Arc::new(config.0)
     }
 
@@ -113,16 +101,20 @@ impl Config {
     }
 }
 
-const MAX_DATAGRAM_SIZE: usize = 1350;
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct Server {
     endpoint: Arc<quinn::Endpoint>,
-    stream_receiver: Receiver<Stream>,
+    receiver: Receiver<quinn::Connection>,
     shutdown_sender: watch::Sender<()>,
 }
 
 impl Server {
-    pub async fn new(config: Config, socket: std::net::UdpSocket) -> Result<Self> {
+    pub async fn new(socket: UdpSocket, config: Config) -> Result<Self> {
         let server_config = config.build_server_config()?;
         let endpoint_config = config.build_endpoint_config()?;
 
@@ -135,87 +127,40 @@ impl Server {
             runtime,
         )?);
 
-        let (stream_sender, stream_receiver) = async_channel::unbounded();
+        let (sender, receiver) = async_channel::unbounded();
         let (shutdown_sender, shutdown_receiver) = watch::channel(());
 
-        tokio::spawn(run(endpoint.clone(), stream_sender, shutdown_receiver));
+        tokio::spawn(accept_loop(endpoint.clone(), sender, shutdown_receiver));
 
         Ok(Self {
             endpoint,
-            stream_receiver,
+            receiver,
             shutdown_sender,
         })
     }
-
-    /// Signals the server to stop accepting new connections and shutdown gracefully.
-    pub fn shutdown(&self) {
-        let _ = self.shutdown_sender.send(());
-    }
-
-    pub async fn accept_bidirectional(&self) -> Result<Stream> {
-        match self.stream_receiver.recv().await {
-            Ok(value) => Ok(value),
-            Err(_) => Err(Error::ConnectionClosed),
-        }
-    }
-
-    /// Closes all connections immediately and stops accepting new ones.
-    pub fn close(&self) {
-        self.endpoint.close(0u32.into(), b"Server closed");
-    }
-
-    /// Get the local SocketAddr the underlying socket is bound to
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.endpoint.local_addr()?)
-    }
-
-    /// Switch to a new UDP socket
-    pub fn rebind(&self, socket: std::net::UdpSocket) -> Result<()> {
-        Ok(self.endpoint.rebind(socket)?)
-    }
-
-    /// Wait for all connections on the endpoint to be cleanly shut down
-    pub async fn wait_idle(&self) {
-        self.endpoint.wait_idle().await
-    }
 }
 
-async fn run(
+async fn accept_loop(
     endpoint: Arc<quinn::Endpoint>,
-    stream_sender: Sender<Stream>,
+    sender: Sender<quinn::Connection>,
     mut shutdown_receiver: watch::Receiver<()>,
 ) {
     loop {
-        let stream_sender = stream_sender.clone();
         let endpoint = endpoint.clone();
+        let sender_clone = sender.clone();
 
         tokio::select! {
-            Some(conn) = endpoint.accept() => {
+            Some(accept) = endpoint.accept() => {
                 tokio::spawn(async move {
-                    match conn.await {
-                        Ok(new_connection) => {
-                            info!("New connection from: {}", new_connection.remote_address());
-                            let connection = Arc::new(new_connection);
-
-                            tokio::spawn(handle_full_cone_proxy(connection.clone()));
-
-                            loop {
-                                tokio::select! {
-                                    Ok((send, recv)) = connection.accept_bi() => {
-                                        if stream_sender.send(Stream(send, recv)).await.is_err() {
-                                            error!("Stream receiver dropped, cannot accept new streams");
-                                            break;
-                                        }
-                                    }
-                                    else => {
-                                        debug!("Connection handling loop finished for {}", connection.remote_address());
-                                        break;
-                                    }
-                                }
+                    match accept.await {
+                        Ok(connection) => {
+                            debug!("Accept connection from {}", connection.remote_address());
+                            if sender_clone.send(connection).await.is_err() {
+                                warn!("Connection receiver is closed");
                             }
                         }
                         Err(_err) => {
-                            error!("Connection error: {}", _err);
+                            error!("Connection error {}", _err);
                         }
                     }
                 });
@@ -228,97 +173,23 @@ async fn run(
     }
 }
 
-async fn handle_full_cone_proxy(conn: Arc<quinn::Connection>) {
-    // 1. 创建专用的 UDP 套接字
-    let proxy_socket = match UdpSocket::bind("0.0.0.0:0").await {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            error!("Failed to bind UDP socket for proxy: {}", e);
-            conn.close(1u32.into(), b"Internal Server Error");
-            return;
+impl crate::Acceptor for Server {
+    type Connection = quinn::Connection;
+
+    async fn accept(&self) -> io::Result<Self::Connection> {
+        match self.receiver.recv().await {
+            Ok(conn) => Ok(conn),
+            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Acceptor is closed")),
         }
-    };
-    info!(
-        "Created UDP proxy socket at {} for client {}",
-        proxy_socket.local_addr().unwrap(),
-        conn.remote_address()
-    );
-
-    // 2. 启动两个任务进行双向数据转发
-    // 任务1: 从 QUIC 读取数据报, 解码目标地址, 然后通过 UDP 套接字发送出去
-    let fwd_conn = conn.clone();
-    let fwd_socket = proxy_socket.clone();
-    let fwd_task = tokio::spawn(async move {
-        loop {
-            match fwd_conn.read_datagram().await {
-                Ok(datagram) => {
-                    if let Some((dest_addr, payload)) = decode_addr(&datagram) {
-                        info!(
-                            "Server Read Datagram dest: {}, playload: {}",
-                            dest_addr,
-                            payload.len()
-                        );
-                        if let Err(e) = fwd_socket.send_to(payload, dest_addr).await {
-                            warn!("Failed to send UDP packet to {}: {}", dest_addr, e);
-                        }
-                    } else {
-                        warn!(
-                            "Received invalid datagram from client {}",
-                            fwd_conn.remote_address()
-                        );
-                    }
-                }
-                Err(e) => {
-                    debug!("QUIC datagram read error (connection closing?): {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    // 任务2: 从 UDP 套接字读取数据, 编码源地址, 然后通过 QUIC 数据报发回客户端
-    let bwd_conn = conn.clone();
-    let bwd_socket = proxy_socket.clone();
-    let bwd_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
-        loop {
-            match bwd_socket.recv_from(&mut buf).await {
-                Ok((len, source_addr)) => {
-                    let payload = &buf[..len];
-                    let mut response_datagram = encode_addr(&source_addr);
-                    response_datagram.extend_from_slice(payload);
-
-                    info!(
-                        "Server Send Datagram dest: {}, playload: {}",
-                        source_addr,
-                        payload.len()
-                    );
-
-                    // Datagram too large
-                    if let Err(e) = bwd_conn.send_datagram(response_datagram.into()) {
-                        debug!("Failed to send QUIC datagram (connection closing?): {}", e);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    error!("UDP socket recv_from error: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    // 等待任一任务结束. 如果一个方向的转发停止 (通常是由于QUIC连接断开), 我们就清理所有资源.
-    tokio::select! {
-        _ = fwd_task => {},
-        _ = bwd_task => {},
     }
 
-    info!("Closing UDP proxy for client {}", conn.remote_address());
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.endpoint.local_addr()
+    }
 }
 
-impl Acceptor for Server {
-    async fn accept_bidirectional(&self) -> io::Result<impl Reliable> {
-        Ok(Server::accept_bidirectional(self).await?)
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.shutdown_sender.send(());
     }
 }

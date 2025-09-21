@@ -1508,12 +1508,14 @@ dependencies = [
  "futures",
  "ombrac-transport",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
 name = "ombrac-client"
 version = "0.5.15"
 dependencies = [
+ "arc-swap",
  "blake3",
  "bytes",
  "clap",

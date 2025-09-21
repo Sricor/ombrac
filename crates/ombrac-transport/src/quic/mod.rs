@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, error::Error>;
 
+pub use quinn::Connection;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Congestion {
     Bbr,
@@ -112,4 +114,74 @@ fn load_private_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
         })?
     };
     Ok(key)
+}
+
+#[derive(Debug)]
+pub enum ConnectionError {
+    QuinnConnection(quinn::ConnectionError),
+    QuinnSendDatagram(quinn::SendDatagramError),
+}
+
+impl From<quinn::ConnectionError> for ConnectionError {
+    fn from(e: quinn::ConnectionError) -> Self {
+        ConnectionError::QuinnConnection(e)
+    }
+}
+
+impl From<quinn::SendDatagramError> for ConnectionError {
+    fn from(e: quinn::SendDatagramError) -> Self {
+        ConnectionError::QuinnSendDatagram(e)
+    }
+}
+
+impl From<ConnectionError> for io::Error {
+    fn from(e: ConnectionError) -> Self {
+        match e {
+            ConnectionError::QuinnConnection(error) => {
+                use quinn::ConnectionError::*;
+                let kind = match error {
+                    LocallyClosed | ConnectionClosed(_) | ApplicationClosed(_) | Reset
+                    | TimedOut => io::ErrorKind::ConnectionReset,
+                    _ => io::ErrorKind::Other,
+                };
+                io::Error::new(kind, error)
+            }
+            ConnectionError::QuinnSendDatagram(error) => {
+                use quinn::SendDatagramError::*;
+                let kind = match error {
+                    ConnectionLost(_) => io::ErrorKind::ConnectionReset,
+                    _ => io::ErrorKind::Other,
+                };
+                io::Error::new(kind, error)
+            }
+        }
+    }
+}
+
+impl crate::Connection for quinn::Connection {
+    type Stream = stream::Stream;
+
+    async fn accept_bidirectional(&self) -> io::Result<Self::Stream> {
+        let (send, recv) = quinn::Connection::accept_bi(self)
+            .await
+            .map_err(|e| ConnectionError::from(e))?;
+        Ok(stream::Stream(send, recv))
+    }
+
+    async fn open_bidirectional(&self) -> io::Result<Self::Stream> {
+        let (send, recv) = quinn::Connection::open_bi(self)
+            .await
+            .map_err(|e| ConnectionError::from(e))?;
+        Ok(stream::Stream(send, recv))
+    }
+
+    async fn read_datagram(&self) -> io::Result<bytes::Bytes> {
+        quinn::Connection::read_datagram(self)
+            .await
+            .map_err(|e| ConnectionError::from(e).into())
+    }
+
+    async fn send_datagram(&self, data: bytes::Bytes) -> io::Result<()> {
+        quinn::Connection::send_datagram(self, data).map_err(|e| ConnectionError::from(e).into())
+    }
 }
