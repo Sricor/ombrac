@@ -173,27 +173,27 @@ impl TryFrom<&str> for Address {
             return Ok(Address::from(addr));
         }
 
-        if let Some((domain, port_str)) = value.rsplit_once(':') {
-            if let Ok(port) = port_str.parse::<u16>() {
-                if domain.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Domain name cannot be empty",
-                    ));
-                }
-
-                if domain.len() > 255 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Domain name is too long: {} bytes (max 255)", domain.len()),
-                    ));
-                }
-
-                return Ok(Address::Domain(
-                    Bytes::copy_from_slice(domain.as_bytes()),
-                    port,
+        if let Some((domain, port_str)) = value.rsplit_once(':')
+            && let Ok(port) = port_str.parse::<u16>()
+        {
+            if domain.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Domain name cannot be empty",
                 ));
             }
+
+            if domain.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Domain name is too long: {} bytes (max 255)", domain.len()),
+                ));
+            }
+
+            return Ok(Address::Domain(
+                Bytes::copy_from_slice(domain.as_bytes()),
+                port,
+            ));
         }
 
         Err(io::Error::new(

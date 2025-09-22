@@ -179,7 +179,7 @@ impl crate::Acceptor for Server {
     async fn accept(&self) -> io::Result<Self::Connection> {
         match self.receiver.recv().await {
             Ok(conn) => Ok(conn),
-            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Acceptor is closed")),
+            Err(_) => Err(io::Error::other("Acceptor is closed")),
         }
     }
 

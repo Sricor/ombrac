@@ -155,11 +155,11 @@ impl crate::Initiator for Client {
     type Connection = quinn::Connection;
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        Client::local_addr(&self).map_err(io::Error::other)
+        Client::local_addr(self).map_err(io::Error::other)
     }
 
     async fn connect(&self) -> io::Result<Self::Connection> {
-        Client::connect(&self).await.map_err(io::Error::other)
+        Client::connect(self).await.map_err(io::Error::other)
     }
 }
 

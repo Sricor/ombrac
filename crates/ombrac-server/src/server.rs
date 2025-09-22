@@ -35,7 +35,7 @@ impl<T: Acceptor> Server<T> {
             tokio::select! {
                 accepted = self.acceptor.accept() => {
                     let connection = accepted?;
-                    let secret = self.secret.clone();
+                    let secret = self.secret;
                     info!("Accepted a new connection from client.");
 
                     tokio::spawn(async move {

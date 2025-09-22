@@ -164,14 +164,14 @@ impl crate::Connection for quinn::Connection {
     async fn accept_bidirectional(&self) -> io::Result<Self::Stream> {
         let (send, recv) = quinn::Connection::accept_bi(self)
             .await
-            .map_err(|e| ConnectionError::from(e))?;
+            .map_err(ConnectionError::from)?;
         Ok(stream::Stream(send, recv))
     }
 
     async fn open_bidirectional(&self) -> io::Result<Self::Stream> {
         let (send, recv) = quinn::Connection::open_bi(self)
             .await
-            .map_err(|e| ConnectionError::from(e))?;
+            .map_err(ConnectionError::from)?;
         Ok(stream::Stream(send, recv))
     }
 

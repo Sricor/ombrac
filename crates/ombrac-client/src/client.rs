@@ -27,7 +27,7 @@ where
     C: Connection,
 {
     pub async fn new(transport: T, secret: Secret, options: Option<Bytes>) -> io::Result<Self> {
-        let options = options.unwrap_or(Bytes::new());
+        let options = options.unwrap_or_default();
         let connection = Self::client_hello(&transport, secret, options.clone()).await?;
 
         Ok(Self {

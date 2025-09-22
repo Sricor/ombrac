@@ -68,11 +68,9 @@ where
                             .serve_connection(io, service)
                             .with_upgrades()
                             .await
-                        {
-                            if !is_connection_closed_error(&e) {
+                            && !is_connection_closed_error(&e) {
                                 error!("Failed to serve connection from {}: {}", remote_addr, e);
                             }
-                        }
                     });
                 }
             }
@@ -86,7 +84,7 @@ where
     ) -> HttpResult {
         let target_addr = match Self::extract_target_address(&req) {
             Ok(addr) => addr,
-            Err(response) => return Ok(response),
+            Err(response) => return Ok(*response),
         };
 
         let outbound_conn = match client.open_bidirectional(target_addr.clone()).await {
@@ -168,7 +166,7 @@ where
 
     fn extract_target_address(
         req: &Request<hyper::body::Incoming>,
-    ) -> Result<Address, Response<BoxBody<Bytes, hyper::Error>>> {
+    ) -> Result<Address, Box<Response<BoxBody<Bytes, hyper::Error>>>> {
         let host = req.uri().host().ok_or_else(|| {
             error!("Request URI does not contain a host");
             Self::create_error_response(StatusCode::BAD_REQUEST)
@@ -184,10 +182,10 @@ where
             });
         let addr_str = format!("{}:{}", host, port);
 
-        Address::try_from(addr_str).map_err(|e| {
+        Ok(Address::try_from(addr_str).map_err(|e| {
             error!("Invalid target address format: {}", e);
             Self::create_error_response(StatusCode::BAD_REQUEST)
-        })
+        })?)
     }
 
     fn create_error_response(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {

@@ -73,8 +73,8 @@ where
         Ok(Service {
             handle,
             shutdown_tx,
-            _acceptor: PhantomData::default(),
-            _connection: PhantomData::default(),
+            _acceptor: PhantomData,
+            _connection: PhantomData,
         })
     }
 
