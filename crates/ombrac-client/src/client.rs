@@ -107,12 +107,18 @@ where
         self.options = options
     }
 
-    pub async fn reconnect(&self) -> io::Result<()> {
+    pub async fn reconnect(&self, old_conn_id: usize) -> io::Result<()> {
         let _lock = self.reconnect_lock.lock().await;
 
-        self.connection.store(Arc::new(
-            Self::client_hello(&self.transport, self.secret, self.options.clone()).await?,
-        ));
+        let current_conn_id = Arc::as_ptr(&self.connection.load()) as usize;
+        if current_conn_id == old_conn_id {
+            info!("Connection is still stale, performing reconnection.");
+            let new_connection =
+                Self::client_hello(&self.transport, self.secret, self.options.clone()).await?;
+            self.connection.store(Arc::new(new_connection));
+        } else {
+            info!("Connection already re-established by another task. Skipping reconnection.");
+        }
 
         Ok(())
     }
@@ -123,15 +129,17 @@ where
         Fut: Future<Output = io::Result<R>>,
     {
         let connection = self.connection.load();
+        let old_conn_id = Arc::as_ptr(&connection) as usize;
         match operation(connection).await {
             Ok(result) => Ok(result),
             Err(e)
                 if e.kind() == io::ErrorKind::ConnectionReset
                     || e.kind() == io::ErrorKind::BrokenPipe
-                    || e.kind() == io::ErrorKind::NotConnected =>
+                    || e.kind() == io::ErrorKind::NotConnected
+                    || e.kind() == io::ErrorKind::TimedOut =>
             {
                 warn!("Connection lost, attempting to reconnect. Error: {}", e);
-                self.reconnect().await?;
+                self.reconnect(old_conn_id).await?;
                 info!("Reconnection successful, retrying operation.");
                 let new_connection = self.connection.load();
                 operation(new_connection).await
