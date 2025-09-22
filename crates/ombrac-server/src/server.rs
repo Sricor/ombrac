@@ -92,9 +92,10 @@ impl<T: Acceptor> Server<T> {
         }
 
         let connection = Arc::new(connection);
+        let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
         let tcp_handler = Self::spawn_tcp_handler(Arc::clone(&connection), peer_addr);
-        let udp_handler = Self::spawn_udp_handler(Arc::clone(&connection), peer_addr);
+        let udp_handler = Self::spawn_udp_handler(Arc::clone(&connection), peer_addr, max_datagram_size);
 
         let _ = tokio::try_join!(tcp_handler, udp_handler);
 
@@ -168,6 +169,7 @@ impl<T: Acceptor> Server<T> {
     fn spawn_udp_handler(
         connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
+        max_datagram_size: usize
     ) -> JoinHandle<io::Result<()>> {
         tokio::spawn(async move {
             let udp_socket = UdpSocket::bind("[::]:0").await?;
@@ -210,7 +212,7 @@ impl<T: Acceptor> Server<T> {
             let downstream_conn = Arc::clone(&connection);
             let downstream_sock = Arc::clone(&udp_socket);
             let downstream_handler = tokio::spawn(async move {
-                let mut buf = vec![0u8; 1300];
+                let mut buf = vec![0u8; max_datagram_size];
                 loop {
                     let (len, from_addr) = downstream_sock.recv_from(&mut buf).await?;
                     let packet = UdpPacket {
