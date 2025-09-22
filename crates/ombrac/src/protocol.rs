@@ -213,12 +213,12 @@ impl TryFrom<String> for Address {
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Domain(domain, port) => format!("{:?}:{}", domain, port),
-            Self::SocketV4(addr) => addr.to_string(),
-            Self::SocketV6(addr) => addr.to_string(),
-        };
-
-        write!(f, "{value}")
+        match self {
+            Self::Domain(domain, port) => {
+                write!(f, "{}:{}", String::from_utf8_lossy(domain), port)
+            }
+            Self::SocketV4(addr) => write!(f, "{}", addr),
+            Self::SocketV6(addr) => write!(f, "{}", addr),
+        }
     }
 }
