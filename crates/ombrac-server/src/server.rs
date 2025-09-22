@@ -212,6 +212,7 @@ impl<T: Acceptor> Server<T> {
             let downstream_conn = Arc::clone(&connection);
             let downstream_sock = Arc::clone(&udp_socket);
             let downstream_handler = tokio::spawn(async move {
+                // TODO: max_size - protocol size?
                 let mut buf = vec![0u8; max_datagram_size];
                 loop {
                     let (len, from_addr) = downstream_sock.recv_from(&mut buf).await?;
