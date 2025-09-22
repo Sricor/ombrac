@@ -1,8 +1,9 @@
-use std::io;
 use std::sync::Arc;
+use std::{io, net::SocketAddr};
 
 use futures::StreamExt;
 use tokio::{
+    io::AsyncWriteExt,
     net::{TcpStream, UdpSocket},
     sync::broadcast,
     task::JoinHandle,
@@ -30,30 +31,40 @@ impl<T: Acceptor> Server<T> {
     }
 
     pub async fn accept_loop(&self, mut shutdown_rx: broadcast::Receiver<()>) -> io::Result<()> {
-        info!("Server is running, listening for connections...");
+        info!(
+            "Server is running, listening on {}",
+            self.acceptor.local_addr()?
+        );
+
         loop {
             tokio::select! {
                 accepted = self.acceptor.accept() => {
-                    let connection = accepted?;
                     let secret = self.secret;
-                    info!("Accepted a new connection from client.");
 
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(connection, secret).await {
+                        let connection = accepted.unwrap();
+                        let peer_addr = connection.remote_address().unwrap();
+                        info!("{} Accepted new connection", peer_addr);
+
+                        if let Err(e) = Self::handle_connection(connection, secret, peer_addr).await {
                             error!("Failed to handle connection: {}", e);
                         }
                     });
                 },
 
                 _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received, stopping accept loop.");
+                    debug!("Shutdown signal received, stopping accept loop.");
                     return Ok(());
                 }
             }
         }
     }
 
-    async fn handle_connection(connection: T::Connection, secret: Secret) -> io::Result<()> {
+    async fn handle_connection(
+        connection: T::Connection,
+        secret: Secret,
+        peer_addr: SocketAddr,
+    ) -> io::Result<()> {
         let mut control_stream = connection.accept_bidirectional().await?;
         let mut framed_control = Framed::new(&mut control_stream, ProtocolCodec);
 
@@ -62,47 +73,47 @@ impl<T: Acceptor> Server<T> {
         match framed_control.next().await {
             Some(Ok(UpstreamMessage::Hello(hello))) => {
                 if hello.version != PROTOCOLS_VERSION {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Unsupported protocol version",
-                    ));
+                    let err = "Unsupported protocol version";
+                    error!("{} Handshake failed: {}", peer_addr, err);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, err));
                 }
                 if hello.secret != secret {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Invalid secret",
-                    ));
+                    let err = "Invalid secret";
+                    error!("{} Handshake failed: {}", peer_addr, err);
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, err));
                 }
-                debug!("Client handshake successful.");
+                debug!("{} Client handshake successful", peer_addr);
             }
             _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Expected Hello message",
-                ));
+                let err = "Expected Hello message";
+                error!("{} Handshake failed: {}", peer_addr, err);
+                return Err(io::Error::new(io::ErrorKind::InvalidData, err));
             }
         }
 
         let connection = Arc::new(connection);
 
-        let tcp_handler = Self::spawn_tcp_handler(Arc::clone(&connection));
-        let udp_handler = Self::spawn_udp_handler(Arc::clone(&connection));
+        let tcp_handler = Self::spawn_tcp_handler(Arc::clone(&connection), peer_addr);
+        let udp_handler = Self::spawn_udp_handler(Arc::clone(&connection), peer_addr);
 
         let _ = tokio::try_join!(tcp_handler, udp_handler);
 
-        debug!("Client connection closed.");
+        debug!("{} Client connection closed.", peer_addr);
         Ok(())
     }
 
-    fn spawn_tcp_handler(connection: Arc<T::Connection>) -> JoinHandle<io::Result<()>> {
+    fn spawn_tcp_handler(
+        connection: Arc<T::Connection>,
+        peer_addr: SocketAddr,
+    ) -> JoinHandle<io::Result<()>> {
         tokio::spawn(async move {
             loop {
                 let stream = connection.accept_bidirectional().await?;
-                info!("Accepted a new bidirectional stream for TCP.");
+                info!("{} Accepted new bidirectional stream for TCP", peer_addr);
 
                 tokio::spawn(async move {
-                    if let Err(e) = Self::handle_tcp_stream(stream).await {
-                        error!("Error handling TCP stream: {}", e);
+                    if let Err(e) = Self::handle_tcp_stream(stream, peer_addr).await {
+                        error!("{} TCP stream handler error: {}", peer_addr, e);
                     }
                 });
             }
@@ -111,6 +122,7 @@ impl<T: Acceptor> Server<T> {
 
     async fn handle_tcp_stream(
         mut stream: <T::Connection as Connection>::Stream,
+        peer_addr: SocketAddr,
     ) -> io::Result<()> {
         let mut framed = Framed::new(&mut stream, ProtocolCodec);
 
@@ -124,7 +136,7 @@ impl<T: Acceptor> Server<T> {
             }
         };
 
-        info!("Received TCP connect request to: {dest_addr}");
+        info!("{} Received proxy request to: {}", peer_addr, dest_addr);
 
         let mut dest_stream = match dest_addr {
             Address::SocketV4(addr) => TcpStream::connect(addr).await?,
@@ -132,18 +144,39 @@ impl<T: Acceptor> Server<T> {
             Address::Domain(_, _) => TcpStream::connect(dest_addr.to_string()).await?,
         };
 
-        info!("Successfully connected to destination: {}", dest_addr);
+        info!(
+            "{} Successfully connected to destination: {}",
+            peer_addr, dest_addr
+        );
 
-        tokio::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
+        let parts = framed.into_parts();
+        let mut stream = parts.io;
+        let leftover_bytes = parts.read_buf;
+        if !leftover_bytes.is_empty() {
+            dest_stream.write_all(&leftover_bytes).await?;
+        }
+
+        let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
+        info!(
+            "{} Proxy to {} finished. Upstream: {} bytes, Downstream: {} bytes",
+            peer_addr, dest_addr, up, down
+        );
 
         Ok(())
     }
 
-    fn spawn_udp_handler(connection: Arc<T::Connection>) -> JoinHandle<io::Result<()>> {
+    fn spawn_udp_handler(
+        connection: Arc<T::Connection>,
+        peer_addr: SocketAddr,
+    ) -> JoinHandle<io::Result<()>> {
         tokio::spawn(async move {
             let udp_socket = UdpSocket::bind("[::]:0").await?;
             let udp_socket = Arc::new(udp_socket);
-            info!("UDP proxy socket bound to: {}", udp_socket.local_addr()?);
+            info!(
+                "{} UDP proxy socket bound to: {}",
+                peer_addr,
+                udp_socket.local_addr()?
+            );
 
             let upstream_conn = Arc::clone(&connection);
             let upstream_sock = Arc::clone(&udp_socket);

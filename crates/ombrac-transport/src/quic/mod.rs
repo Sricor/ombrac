@@ -184,4 +184,12 @@ impl crate::Connection for quinn::Connection {
     async fn send_datagram(&self, data: bytes::Bytes) -> io::Result<()> {
         quinn::Connection::send_datagram(self, data).map_err(|e| ConnectionError::from(e).into())
     }
+
+    fn remote_address(&self) -> io::Result<std::net::SocketAddr> {
+        Ok(quinn::Connection::remote_address(self))
+    }
+
+    fn max_datagram_size(&self) -> Option<usize> {
+        quinn::Connection::max_datagram_size(self)
+    }
 }
