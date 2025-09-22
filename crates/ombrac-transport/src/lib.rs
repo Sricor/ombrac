@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod io;
 #[cfg(feature = "quic")]
 pub mod quic;
 

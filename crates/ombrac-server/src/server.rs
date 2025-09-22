@@ -95,7 +95,8 @@ impl<T: Acceptor> Server<T> {
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
         let tcp_handler = Self::spawn_tcp_handler(Arc::clone(&connection), peer_addr);
-        let udp_handler = Self::spawn_udp_handler(Arc::clone(&connection), peer_addr, max_datagram_size);
+        let udp_handler =
+            Self::spawn_udp_handler(Arc::clone(&connection), peer_addr, max_datagram_size);
 
         let _ = tokio::try_join!(tcp_handler, udp_handler);
 
@@ -157,7 +158,8 @@ impl<T: Acceptor> Server<T> {
             dest_stream.write_all(&leftover_bytes).await?;
         }
 
-        let (up, down) = tokio::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
+        let (up, down) =
+            ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
         info!(
             "{} Proxy to {} finished. Upstream: {} bytes, Downstream: {} bytes",
             peer_addr, dest_addr, up, down
@@ -169,7 +171,7 @@ impl<T: Acceptor> Server<T> {
     fn spawn_udp_handler(
         connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
-        max_datagram_size: usize
+        max_datagram_size: usize,
     ) -> JoinHandle<io::Result<()>> {
         tokio::spawn(async move {
             let udp_socket = UdpSocket::bind("[::]:0").await?;

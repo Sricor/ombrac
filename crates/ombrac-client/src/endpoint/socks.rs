@@ -29,7 +29,7 @@ where
     ) -> io::Result<(u64, u64)> {
         let addr = util::socks_to_ombrac_addr(address)?;
         let mut outbound = self.client.open_bidirectional(addr).await?;
-        tokio::io::copy_bidirectional(stream, &mut outbound).await
+        ombrac_transport::io::copy_bidirectional(stream, &mut outbound).await
     }
 }
 

@@ -115,7 +115,11 @@ where
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     let mut upgraded_io = TokioIo::new(upgraded);
-                    match tokio::io::copy_bidirectional(&mut upgraded_io, &mut outbound_conn).await
+                    match ombrac_transport::io::copy_bidirectional(
+                        &mut upgraded_io,
+                        &mut outbound_conn,
+                    )
+                    .await
                     {
                         Ok((sent, received)) => {
                             info!(
