@@ -44,8 +44,7 @@ endpoint-socks = ["socks-lib"]
 endpoint-tun = [
     "ombrac-netstack",
     "ipnet",
-    "tun-rs",
-    "dashmap"
+    "tun-rs"
 ]
 endpoint-http = [
     "http", 
@@ -82,7 +81,7 @@ hyper-util = { workspace = true, features = ["tokio"], optional = true }
 http-body-util = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["json"], optional = true }
 tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optional = true }
-dashmap = { workspace = true, optional = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
