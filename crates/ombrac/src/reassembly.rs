@@ -142,13 +142,11 @@ impl UdpReassembler {
                     return Ok(None);
                 }
 
-                if let Some(buffer) = self.map.get(&fragment_id) {
-                    if buffer.is_complete() {
-                        if let Some((_, mut final_buffer)) = self.map.remove(&fragment_id) {
+                if let Some(buffer) = self.map.get(&fragment_id)
+                    && buffer.is_complete()
+                        && let Some((_, mut final_buffer)) = self.map.remove(&fragment_id) {
                             return Ok(Some(final_buffer.assemble()));
                         }
-                    }
-                }
 
                 Ok(None)
             }

@@ -207,7 +207,7 @@ impl UdpPacketSplitter {
         if subsequent_chunk_size > 0 && remaining_len_after_first > 0 {
             // Ceiling division to calculate how many more chunks are needed.
             num_chunks +=
-                (remaining_len_after_first + subsequent_chunk_size - 1) / subsequent_chunk_size;
+                remaining_len_after_first.div_ceil(subsequent_chunk_size);
         }
 
         // The number of fragments cannot exceed what a u8 can hold.
@@ -411,8 +411,8 @@ impl TryFrom<&str> for Address {
             return Ok(Address::from(addr));
         }
 
-        if let Some((domain, port_str)) = value.rsplit_once(':') {
-            if let Ok(port) = port_str.parse::<u16>() {
+        if let Some((domain, port_str)) = value.rsplit_once(':')
+            && let Ok(port) = port_str.parse::<u16>() {
                 if domain.is_empty() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -432,7 +432,6 @@ impl TryFrom<&str> for Address {
                     port,
                 ));
             }
-        }
 
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,

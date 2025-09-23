@@ -108,8 +108,8 @@ where
 
         let client = self.client.clone();
         let client_to_remote = tokio::spawn(async move {
-            if let Err(e) = Self::process_client_packet(&client, &buf[.._len]).await {
-                error!("Error processing first UDP packet: {}", e);
+            if let Err(_e) = Self::process_client_packet(&client, &buf[.._len]).await {
+                error!("Error processing first UDP packet: {}", _e);
                 return;
             }
 
@@ -123,13 +123,13 @@ where
                             );
                             continue;
                         }
-                        if let Err(e) = Self::process_client_packet(&client, &buf[..len]).await {
-                            error!("Error processing UDP packet from client: {}", e);
+                        if let Err(_e) = Self::process_client_packet(&client, &buf[..len]).await {
+                            error!("Error processing UDP packet from client: {}", _e);
                             break;
                         }
                     }
-                    Err(e) => {
-                        error!("Error receiving from SOCKS UDP socket: {}", e);
+                    Err(_e) => {
+                        error!("Error receiving from SOCKS UDP socket: {}", _e);
                         break;
                     }
                 }
