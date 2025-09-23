@@ -138,7 +138,6 @@ impl UdpPacket {
         }
     }
 
-    /// Helper function to split a large datagram into multiple UdpPacket::Fragmented.
     pub fn split_packet(
         address: Address,
         data: Bytes,
@@ -159,9 +158,12 @@ impl UdpPacket {
         let subsequent_frag_overhead = 1 + 2 + 1 + 1; // Type + ID + Index + Count
 
         // Split the first chunk
-        let first_chunk_size = std::cmp::min(remaining_data.len(), max_datagram_size.saturating_sub(first_frag_overhead));
+        let first_chunk_size = std::cmp::min(
+            remaining_data.len(),
+            max_datagram_size.saturating_sub(first_frag_overhead),
+        );
         if first_chunk_size == 0 {
-             // Cannot even fit the header and 1 byte of data.
+            // Cannot even fit the header and 1 byte of data.
             // warn!("Max datagram size too small to send even the first fragment.");
             return vec![];
         }
@@ -175,11 +177,12 @@ impl UdpPacket {
                 chunks.push(remaining_data.split_to(chunk_size));
             }
         }
-        
-        let fragment_count = chunks.len() as u8;
-        if fragment_count == 0 {
+
+        if chunks.len() > u8::MAX as usize {
             return vec![];
         }
+
+        let fragment_count = chunks.len() as u8;
 
         chunks
             .into_iter()
@@ -206,6 +209,11 @@ impl Address {
     pub const ADDR_TYPE_IPV4: u8 = 0x01;
     pub const ADDR_TYPE_IPV6: u8 = 0x04;
     pub const ADDR_TYPE_DOMAIN: u8 = 0x03;
+
+    pub const PORT_LEN: usize = 2;
+    pub const IPV4_ADDR_LEN: usize = 4;
+    pub const IPV6_ADDR_LEN: usize = 16;
+    pub const MAX_DOMAIN_LEN: usize = 255;
 
     pub fn write_to(&self, buf: &mut BytesMut) {
         match self {
@@ -239,26 +247,26 @@ impl Address {
 
         match addr_type {
             Self::ADDR_TYPE_IPV4 => {
-                if buf.remaining() < 4 + 2 {
+                if buf.remaining() < Self::IPV4_ADDR_LEN + Self::PORT_LEN {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "Not enough data for IPv4 address",
                     ));
                 }
-                let mut ip_bytes = [0u8; 4];
+                let mut ip_bytes = [0u8; Self::IPV4_ADDR_LEN];
                 buf.copy_to_slice(&mut ip_bytes);
                 let ip = Ipv4Addr::from(ip_bytes);
                 let port = buf.get_u16();
                 Ok(Address::SocketV4(SocketAddrV4::new(ip, port)))
             }
             Self::ADDR_TYPE_IPV6 => {
-                if buf.remaining() < 16 + 2 {
+                if buf.remaining() < Self::IPV6_ADDR_LEN + Self::PORT_LEN {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "Not enough data for IPv6 address",
                     ));
                 }
-                let mut ip_bytes = [0u8; 16];
+                let mut ip_bytes = [0u8; Self::IPV6_ADDR_LEN];
                 buf.copy_to_slice(&mut ip_bytes);
                 let ip = Ipv6Addr::from(ip_bytes);
                 let port = buf.get_u16();
@@ -272,7 +280,7 @@ impl Address {
                     ));
                 }
                 let domain_len = buf.get_u8() as usize;
-                if buf.remaining() < domain_len + 2 {
+                if buf.remaining() < domain_len + Self::PORT_LEN {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "Not enough data for domain and port",
@@ -318,7 +326,7 @@ impl TryFrom<&str> for Address {
                 ));
             }
 
-            if domain.len() > 255 {
+            if domain.len() > Self::MAX_DOMAIN_LEN {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("Domain name is too long: {} bytes (max 255)", domain.len()),

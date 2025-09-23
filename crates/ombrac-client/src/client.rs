@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::io;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use arc_swap::{ArcSwap, Guard};
 use bytes::{Bytes, BytesMut};
@@ -71,9 +71,7 @@ where
             .await?;
         let mut codec = ProtocolCodec;
         let mut buf = BytesMut::new();
-        let connect_message = UpstreamMessage::Connect(ClientConnect {
-            address: dest_addr,
-        });
+        let connect_message = UpstreamMessage::Connect(ClientConnect { address: dest_addr });
         codec.encode(connect_message, &mut buf)?;
         stream.write_all(&buf).await?;
         Ok(stream)

@@ -1,9 +1,10 @@
-use std::collections::HashMap;
-use std::io;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
 use bytes::Bytes;
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tokio::task::JoinHandle;
 
 use crate::protocol::{Address, UdpPacket};
@@ -62,7 +63,11 @@ impl ReassemblyBuffer {
     }
 
     fn assemble(&mut self) -> (Address, Bytes) {
-        let total_len = self.fragments.iter().map(|f| f.as_ref().unwrap().len()).sum();
+        let total_len = self
+            .fragments
+            .iter()
+            .map(|f| f.as_ref().unwrap().len())
+            .sum();
         let mut combined = Vec::with_capacity(total_len);
         for fragment in self.fragments.iter_mut() {
             combined.extend_from_slice(fragment.take().unwrap().as_ref());
@@ -80,7 +85,8 @@ pub struct UdpReassembler {
 
 impl UdpReassembler {
     pub fn new() -> Self {
-        let map: Arc<Mutex<HashMap<FragmentID, ReassemblyBuffer>>> = Arc::new(Mutex::new(HashMap::new()));
+        let map: Arc<Mutex<HashMap<FragmentID, ReassemblyBuffer>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let map_clone = Arc::clone(&map);
 
         let _cleanup_handle = tokio::spawn(async move {
@@ -137,7 +143,7 @@ impl UdpReassembler {
                         return Ok(Some(final_buffer.assemble()));
                     }
                 }
-                
+
                 Ok(None)
             }
         }

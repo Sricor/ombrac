@@ -63,12 +63,18 @@ where
                 Ok(Ok(result)) => result,
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
-                    info!("SOCKS UDP association for {} timed out waiting for first packet.", stream.peer_addr());
+                    info!(
+                        "SOCKS UDP association for {} timed out waiting for first packet.",
+                        stream.peer_addr()
+                    );
                     return Ok(());
                 }
             };
-        
-        info!("Received first UDP packet from client at {}", client_udp_addr);
+
+        info!(
+            "Received first UDP packet from client at {}",
+            client_udp_addr
+        );
 
         let client_clone = Arc::clone(&self.client);
         let inbound_udp_clone = Arc::clone(&inbound_udp);
@@ -77,13 +83,18 @@ where
             loop {
                 match client_clone.read_datagram().await {
                     Ok((origin_addr, data)) => {
-                        let response_packet =
-                            UdpPacket::un_frag(util::ombrac_addr_to_socks(origin_addr).unwrap(), data);
+                        let response_packet = UdpPacket::un_frag(
+                            util::ombrac_addr_to_socks(origin_addr).unwrap(),
+                            data,
+                        );
                         if let Err(e) = inbound_udp_clone
                             .send_to(&response_packet.to_bytes(), client_udp_addr)
                             .await
                         {
-                            error!("Failed to send UDP packet to SOCKS client {}: {}", client_udp_addr, e);
+                            error!(
+                                "Failed to send UDP packet to SOCKS client {}: {}",
+                                client_udp_addr, e
+                            );
                             break;
                         }
                     }
@@ -98,15 +109,18 @@ where
         let client = self.client.clone();
         let client_to_remote = tokio::spawn(async move {
             if let Err(e) = Self::process_client_packet(&client, &buf[.._len]).await {
-                 error!("Error processing first UDP packet: {}", e);
-                 return;
+                error!("Error processing first UDP packet: {}", e);
+                return;
             }
 
             loop {
                 match inbound_udp.recv_from(&mut buf).await {
                     Ok((len, src_addr)) => {
                         if src_addr != client_udp_addr {
-                            warn!("Received UDP packet from unexpected source {}, expected {}. Ignoring.", src_addr, client_udp_addr);
+                            warn!(
+                                "Received UDP packet from unexpected source {}, expected {}. Ignoring.",
+                                src_addr, client_udp_addr
+                            );
                             continue;
                         }
                         if let Err(e) = Self::process_client_packet(&client, &buf[..len]).await {
@@ -139,10 +153,7 @@ where
         Ok(())
     }
 
-    async fn process_client_packet(
-        client: &Client<T, C>,
-        raw: &[u8],
-    ) -> io::Result<()> {
+    async fn process_client_packet(client: &Client<T, C>, raw: &[u8]) -> io::Result<()> {
         let pkt = UdpPacket::from_bytes(&mut &raw[..]).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -208,8 +219,8 @@ where
 
 mod util {
     use ombrac::protocol::Address as OmbracAddress;
-    use std::io;
     use socks_lib::v5::Address as Socks5Address;
+    use std::io;
 
     pub(super) fn socks_to_ombrac_addr(addr: Socks5Address) -> io::Result<OmbracAddress> {
         let result = match addr {
@@ -224,7 +235,7 @@ mod util {
     }
 
     pub(super) fn ombrac_addr_to_socks(addr: OmbracAddress) -> io::Result<Socks5Address> {
-       let result = match addr {
+        let result = match addr {
             OmbracAddress::SocketV4(sa) => Socks5Address::IPv4(sa),
             OmbracAddress::SocketV6(sa) => Socks5Address::IPv6(sa),
             OmbracAddress::Domain(domain_bytes, port) => {

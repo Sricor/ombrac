@@ -16,8 +16,9 @@ default = []
 ombrac-transport = { workspace = true }
 
 bytes = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net"] }
+tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

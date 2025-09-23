@@ -1,7 +1,7 @@
 // server.rs
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::{io, net::SocketAddr};
 
 use bytes::Bytes;
@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use ombrac::{
-    protocol::{Address, UdpPacket, PROTOCOLS_VERSION, Secret},
+    protocol::{Address, PROTOCOLS_VERSION, Secret, UdpPacket},
     reassembly::UdpReassembler, // 引入 UdpReassembler
     upstream::{ProtocolCodec, UpstreamMessage},
 };
@@ -256,8 +256,11 @@ impl<T: Acceptor> Server<T> {
                             UdpPacket::split_packet(address, data, max_datagram_size, fragment_id);
 
                         if fragments.is_empty() {
-                             error!("Packet from {} is too large to be fragmented and sent", from_addr);
-                             continue;
+                            error!(
+                                "Packet from {} is too large to be fragmented and sent",
+                                from_addr
+                            );
+                            continue;
                         }
 
                         for fragment in fragments {
