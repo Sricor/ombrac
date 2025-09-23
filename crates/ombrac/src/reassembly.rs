@@ -1,23 +1,18 @@
 use bytes::{BufMut, Bytes, BytesMut};
-use dashmap::DashMap;
-use std::{
-    io,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::task::JoinHandle;
+use moka::future::Cache;
+use std::{io, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
 use crate::protocol::{Address, UdpPacket};
 
 const DEFAULT_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_MAX_CONCURRENT_REASSEMBLIES: usize = 8192;
+const DEFAULT_MAX_CONCURRENT_REASSEMBLIES: u64 = 8192;
 
 struct ReassemblyBuffer {
     fragments: Vec<Option<Bytes>>,
     received_count: u8,
     total_count: u8,
     address: Address,
-    first_seen: Instant,
 }
 
 impl ReassemblyBuffer {
@@ -37,7 +32,6 @@ impl ReassemblyBuffer {
                 received_count: 1,
                 total_count: fragment_count,
                 address,
-                first_seen: Instant::now(),
             })
         } else {
             None
@@ -60,37 +54,30 @@ impl ReassemblyBuffer {
     }
 
     fn is_complete(&self) -> bool {
-        self.received_count == self.total_count
+        self.received_count > 0 && self.received_count == self.total_count
     }
 
-    fn assemble(mut self) -> (Address, Bytes) {
+    fn assemble_and_take(&mut self) -> (Address, Bytes) {
         let total_len = self
             .fragments
             .iter()
             .map(|f| f.as_ref().map_or(0, |b| b.len()))
             .sum();
         let mut combined = BytesMut::with_capacity(total_len);
+
         for fragment in self.fragments.iter_mut() {
             if let Some(data) = fragment.take() {
                 combined.put(data);
             }
         }
-        (self.address, combined.freeze())
+        (self.address.clone(), combined.freeze())
     }
 }
 
 type FragmentID = u16;
 
 pub struct UdpReassembler {
-    map: Arc<DashMap<FragmentID, ReassemblyBuffer>>,
-    max_concurrent_reassemblies: usize,
-    _cleanup_handle: JoinHandle<()>,
-}
-
-impl Drop for UdpReassembler {
-    fn drop(&mut self) {
-        self._cleanup_handle.abort();
-    }
+    cache: Cache<FragmentID, Arc<Mutex<ReassemblyBuffer>>>,
 }
 
 impl Default for UdpReassembler {
@@ -103,27 +90,16 @@ impl Default for UdpReassembler {
 }
 
 impl UdpReassembler {
-    pub fn new(max_concurrent_reassemblies: usize, reassembly_timeout: Duration) -> Self {
-        let map = Arc::new(DashMap::with_capacity(max_concurrent_reassemblies));
-        let map_clone = Arc::clone(&map);
+    pub fn new(max_concurrent_reassemblies: u64, reassembly_timeout: Duration) -> Self {
+        let cache = Cache::builder()
+            .max_capacity(max_concurrent_reassemblies)
+            .time_to_live(reassembly_timeout)
+            .build();
 
-        let _cleanup_handle = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(reassembly_timeout).await;
-                map_clone.retain(|_id, buffer: &mut ReassemblyBuffer| {
-                    buffer.first_seen.elapsed() <= reassembly_timeout
-                });
-            }
-        });
-
-        Self {
-            map,
-            max_concurrent_reassemblies,
-            _cleanup_handle,
-        }
+        Self { cache }
     }
 
-    pub fn process(&self, packet: UdpPacket) -> io::Result<Option<(Address, Bytes)>> {
+    pub async fn process(&self, packet: UdpPacket) -> io::Result<Option<(Address, Bytes)>> {
         match packet {
             UdpPacket::Unfragmented { address, data } => Ok(Some((address, data))),
             UdpPacket::Fragmented {
@@ -131,33 +107,29 @@ impl UdpReassembler {
                 fragment_index,
                 ..
             } => {
-                // TODO:
                 if fragment_index == 0 {
-                    if self.map.len() >= self.max_concurrent_reassemblies {
-                        return Ok(None);
-                    }
-
-                    if let Some(buffer) = ReassemblyBuffer::new(packet) {
-                        self.map.insert(fragment_id, buffer);
+                    if let Some(mut buffer) = ReassemblyBuffer::new(packet) {
+                        if buffer.is_complete() {
+                            return Ok(Some(buffer.assemble_and_take()));
+                        }
+                        let buffer_lock = Arc::new(Mutex::new(buffer));
+                        self.cache.insert(fragment_id, buffer_lock).await;
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "First fragment packet is malformed",
                         ));
                     }
-                } else if let Some(mut buffer) = self.map.get_mut(&fragment_id) {
+                } else if let Some(buffer_lock) = self.cache.get(&fragment_id).await {
+                    let mut buffer = buffer_lock.lock().await;
                     buffer.add_fragment(packet);
-                } else {
-                    return Ok(None);
-                }
 
-                if let Some(buffer) = self.map.get(&fragment_id)
-                    && buffer.is_complete()
-                    && let Some((_, final_buffer)) = self.map.remove(&fragment_id)
-                {
-                    return Ok(Some(final_buffer.assemble()));
+                    if buffer.is_complete() {
+                        let assembled_data = buffer.assemble_and_take();
+                        self.cache.invalidate(&fragment_id).await;
+                        return Ok(Some(assembled_data));
+                    }
                 }
-
                 Ok(None)
             }
         }

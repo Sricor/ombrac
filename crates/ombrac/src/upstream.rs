@@ -26,28 +26,28 @@ impl Decoder for ProtocolCodec {
         }
 
         let mut cursor = Cursor::new(&src[..]);
+        let msg_type = cursor.get_u8();
 
-        match cursor.get_u8() {
+        match msg_type {
             MSG_TYPE_HELLO => {
-                let header_len = 1 + ClientHello::FIXED_HEADER_LEN;
-                if src.len() < header_len {
+                if cursor.remaining() < ClientHello::FIXED_HEADER_LEN - 1 {
+                    // -1 because msg_type is already read
                     return Ok(None);
                 }
 
-                let options_len = src[34] as usize;
+                let version = cursor.get_u8();
+                let mut secret = [0u8; 32];
+                cursor.copy_to_slice(&mut secret);
+                let options_len = cursor.get_u8() as usize;
+
+                let header_len = cursor.position() as usize;
                 let total_len = header_len + options_len;
 
                 if src.len() < total_len {
                     return Ok(None);
                 }
 
-                src.advance(1);
-
-                let version = src.get_u8();
-                let mut secret = [0u8; 32];
-                src.copy_to_slice(&mut secret);
-                src.advance(1);
-
+                src.advance(header_len);
                 let options = src.split_to(options_len).freeze();
 
                 Ok(Some(UpstreamMessage::Hello(ClientHello {

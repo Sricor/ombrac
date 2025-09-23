@@ -140,7 +140,7 @@ where
                 }
             };
 
-            match self.reassembler.process(packet) {
+            match self.reassembler.process(packet).await {
                 Ok(Some((address, data))) => {
                     return Ok((address, data));
                 }

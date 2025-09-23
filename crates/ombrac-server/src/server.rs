@@ -1,12 +1,8 @@
-use std::{
-    io,
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicU16, Ordering},
-    },
-    time::Duration,
-};
+use std::io;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -237,7 +233,7 @@ impl<T: Acceptor> Server<T> {
                 let packet_bytes = upstream_conn.read_datagram().await?;
                 let packet = UdpPacket::decode(packet_bytes)?;
 
-                if let Some((address, data)) = reassembler.process(packet)? {
+                if let Some((address, data)) = reassembler.process(packet).await? {
                     match address {
                         Address::SocketV4(addr) => {
                             upstream_sock.send_to(&data, addr).await?;
