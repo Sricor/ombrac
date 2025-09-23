@@ -44,9 +44,8 @@ where
             reconnect_lock: Mutex::new(()),
             secret,
             options,
-            // 初始化新增字段
             fragment_id_counter: AtomicU16::new(0),
-            reassembler: UdpReassembler::new(),
+            reassembler: UdpReassembler::default(),
         })
     }
 
@@ -77,45 +76,49 @@ where
         Ok(stream)
     }
 
-    // [修正] 实现UDP分片发送
     pub async fn send_datagram(&self, dest_addr: Address, data: Bytes) -> io::Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
         let connection = self.connection.load();
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
-        // 先尝试作为未分片包
-        let unfragmented_packet = UdpPacket::Unfragmented {
-            address: dest_addr.clone(),
-            data: data.clone(),
-        };
-        let encoded = unfragmented_packet.encode();
+        let overhead = 1 + dest_addr.encoded_len(); // 1 byte for type + address length
+        let predicted_len = overhead + data.len();
 
-        if encoded.len() <= max_datagram_size {
-            // 如果包足够小，直接发送
+        if predicted_len <= max_datagram_size {
+            let unfragmented_packet = UdpPacket::Unfragmented {
+                address: dest_addr,
+                data,
+            };
+            let encoded = unfragmented_packet.encode()?;
+
             self.with_retry(|conn| {
                 let data_for_attempt = encoded.clone();
                 async move { conn.send_datagram(data_for_attempt).await }
             })
             .await?;
         } else {
-            // 如果包太大，进行分片
             warn!(
-                "UDP packet for {} is too large ({} bytes), splitting...",
-                dest_addr,
-                data.len()
+                "UDP packet for {} is too large (predicted size {} > max {}), splitting...",
+                dest_addr, predicted_len, max_datagram_size
             );
+
             let fragment_id = self.fragment_id_counter.fetch_add(1, Ordering::Relaxed);
             let fragments =
                 UdpPacket::split_packet(dest_addr, data, max_datagram_size, fragment_id);
 
-            if fragments.is_empty() {
+            let mut fragments = fragments.peekable();
+            if fragments.peek().is_none() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "Packet is too large to be fragmented and sent",
+                    "Packet is too large to be fragmented and sent (exceeds MTU or fragment count limit)",
                 ));
             }
 
             for fragment in fragments {
-                let packet_bytes = fragment.encode();
+                let packet_bytes = fragment.encode()?;
                 self.with_retry(|conn| {
                     let data_for_attempt = packet_bytes.clone();
                     async move { conn.send_datagram(data_for_attempt).await }
@@ -126,7 +129,6 @@ where
         Ok(())
     }
 
-    // [修正] 实现UDP重组接收
     pub async fn read_datagram(&self) -> io::Result<(Address, Bytes)> {
         loop {
             let packet_bytes = self
@@ -137,24 +139,19 @@ where
                 Ok(packet) => packet,
                 Err(e) => {
                     warn!("Failed to decode UDP packet: {}", e);
-                    // 继续尝试接收下一个包
                     continue;
                 }
             };
 
-            // 将包交给重组器处理
             match self.reassembler.process(packet) {
                 Ok(Some((address, data))) => {
-                    // 成功重组或收到一个完整的包
                     return Ok((address, data));
                 }
                 Ok(None) => {
-                    // 收到了一个分片，已缓存，继续接收
                     continue;
                 }
                 Err(e) => {
                     warn!("UDP reassembly error: {}", e);
-                    // 发生错误，继续尝试接收下一个包
                     continue;
                 }
             }

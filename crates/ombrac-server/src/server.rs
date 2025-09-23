@@ -186,11 +186,9 @@ impl<T: Acceptor> Server<T> {
                 udp_socket.local_addr()?
             );
 
-            // [新增] 为此连接会话创建重组器和分片ID计数器
-            let reassembler = UdpReassembler::new();
+            let reassembler = UdpReassembler::default();
             let fragment_id_counter = Arc::new(AtomicU16::new(0));
 
-            // Upstream: 从客户端接收数据，发往互联网 (接收端 -> 需要重组)
             let upstream_conn = Arc::clone(&connection);
             let upstream_sock = Arc::clone(&udp_socket);
             let upstream_handler = tokio::spawn(async move {
@@ -198,9 +196,7 @@ impl<T: Acceptor> Server<T> {
                     let packet_bytes = upstream_conn.read_datagram().await?;
                     let packet = UdpPacket::decode(packet_bytes)?;
 
-                    // [修正] 将包交给重组器处理
                     if let Some((address, data)) = reassembler.process(packet)? {
-                        // 得到一个完整的包后，再发送
                         match address {
                             Address::SocketV4(addr) => {
                                 upstream_sock.send_to(&data, addr).await?;
@@ -208,6 +204,7 @@ impl<T: Acceptor> Server<T> {
                             Address::SocketV6(addr) => {
                                 upstream_sock.send_to(&data, addr).await?;
                             }
+                            // TODO: DNS cache
                             Address::Domain(_, _) => {
                                 let dest_addr_str = address.to_string();
                                 match tokio::net::lookup_host(&dest_addr_str).await?.next() {
@@ -216,46 +213,43 @@ impl<T: Acceptor> Server<T> {
                                     }
                                     None => {
                                         error!("UDP DNS resolution failed for: {}", dest_addr_str);
-                                        continue;
                                     }
                                 }
                             }
                         }
                     }
-                    // 如果是分片，reassembler.process 会返回 Ok(None)，循环继续
                 }
             });
 
-            // Downstream: 从互联网接收数据，发往客户端 (发送端 -> 需要分片)
             let downstream_conn = Arc::clone(&connection);
             let downstream_sock = Arc::clone(&udp_socket);
             let downstream_handler = tokio::spawn(async move {
-                let mut buf = vec![0u8; 65535]; // 从socket可以读到最大UDP包
+                let mut buf = vec![0u8; max_datagram_size];
                 loop {
                     let (len, from_addr) = downstream_sock.recv_from(&mut buf).await?;
                     let data = Bytes::copy_from_slice(&buf[..len]);
                     let address = Address::from(from_addr);
 
-                    // [修正] 检查是否需要分片
-                    let unfragmented_packet = UdpPacket::Unfragmented {
-                        address: address.clone(),
-                        data: data.clone(),
-                    };
-                    let encoded = unfragmented_packet.encode();
+                    let overhead = 1 + address.encoded_len();
+                    let predicted_len = overhead + data.len();
 
-                    if encoded.len() <= max_datagram_size {
-                        downstream_conn.send_datagram(encoded).await?;
+                    if predicted_len <= max_datagram_size {
+                        let unfragmented_packet = UdpPacket::Unfragmented { address, data };
+                        downstream_conn
+                            .send_datagram(unfragmented_packet.encode()?)
+                            .await?;
                     } else {
                         warn!(
-                            "UDP packet from {} is too large ({} bytes), splitting...",
-                            from_addr,
-                            data.len()
+                            "UDP packet from {} is too large (predicted size {} > max {}), splitting...",
+                            from_addr, predicted_len, max_datagram_size
                         );
+
                         let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
                         let fragments =
                             UdpPacket::split_packet(address, data, max_datagram_size, fragment_id);
 
-                        if fragments.is_empty() {
+                        let mut fragments = fragments.peekable();
+                        if fragments.peek().is_none() {
                             error!(
                                 "Packet from {} is too large to be fragmented and sent",
                                 from_addr
@@ -264,7 +258,7 @@ impl<T: Acceptor> Server<T> {
                         }
 
                         for fragment in fragments {
-                            downstream_conn.send_datagram(fragment.encode()).await?;
+                            downstream_conn.send_datagram(fragment.encode()?).await?;
                         }
                     }
                 }

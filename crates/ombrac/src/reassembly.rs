@@ -1,15 +1,16 @@
 use bytes::Bytes;
+use dashmap::DashMap;
 use std::{
-    collections::HashMap,
     io,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::task::JoinHandle;
 
 use crate::protocol::{Address, UdpPacket};
 
-const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_MAX_CONCURRENT_REASSEMBLIES: usize = 8192;
 
 struct ReassemblyBuffer {
     fragments: Vec<Option<Bytes>>,
@@ -79,33 +80,37 @@ impl ReassemblyBuffer {
 type FragmentID = u16;
 
 pub struct UdpReassembler {
-    map: Arc<Mutex<HashMap<FragmentID, ReassemblyBuffer>>>,
+    map: Arc<DashMap<FragmentID, ReassemblyBuffer>>,
+    max_concurrent_reassemblies: usize,
     _cleanup_handle: JoinHandle<()>,
 }
 
+impl Default for UdpReassembler {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_MAX_CONCURRENT_REASSEMBLIES,
+            DEFAULT_REASSEMBLY_TIMEOUT,
+        )
+    }
+}
+
 impl UdpReassembler {
-    pub fn new() -> Self {
-        let map: Arc<Mutex<HashMap<FragmentID, ReassemblyBuffer>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+    pub fn new(max_concurrent_reassemblies: usize, reassembly_timeout: Duration) -> Self {
+        let map = Arc::new(DashMap::with_capacity(max_concurrent_reassemblies));
         let map_clone = Arc::clone(&map);
 
         let _cleanup_handle = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(REASSEMBLY_TIMEOUT).await;
-                let mut map = map_clone.lock().unwrap();
-                map.retain(|_, buffer| {
-                    if buffer.first_seen.elapsed() > REASSEMBLY_TIMEOUT {
-                        // warn!("Dropping stale fragmented packet (id: {}) due to timeout", buffer.address);
-                        false
-                    } else {
-                        true
-                    }
+                tokio::time::sleep(reassembly_timeout).await;
+                map_clone.retain(|_id, buffer: &mut ReassemblyBuffer| {
+                    buffer.first_seen.elapsed() <= reassembly_timeout
                 });
             }
         });
 
         Self {
             map,
+            max_concurrent_reassemblies,
             _cleanup_handle,
         }
     }
@@ -118,29 +123,30 @@ impl UdpReassembler {
                 fragment_index,
                 ..
             } => {
-                let mut map = self.map.lock().unwrap();
                 if fragment_index == 0 {
+                    if self.map.len() >= self.max_concurrent_reassemblies {
+                        return Ok(None);
+                    }
+
                     if let Some(buffer) = ReassemblyBuffer::new(packet) {
-                        map.insert(fragment_id, buffer);
+                        self.map.insert(fragment_id, buffer);
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "First fragment packet is malformed",
                         ));
                     }
-                } else if let Some(buffer) = map.get_mut(&fragment_id) {
+                } else if let Some(mut buffer) = self.map.get_mut(&fragment_id) {
                     buffer.add_fragment(packet);
                 } else {
-                    // Orphan fragment, just drop it.
                     return Ok(None);
                 }
 
-                // Check for completion
-                if let Some(buffer) = map.get_mut(&fragment_id) {
+                if let Some(buffer) = self.map.get(&fragment_id) {
                     if buffer.is_complete() {
-                        // It's complete, remove from map and return assembled data
-                        let mut final_buffer = map.remove(&fragment_id).unwrap();
-                        return Ok(Some(final_buffer.assemble()));
+                        if let Some((_, mut final_buffer)) = self.map.remove(&fragment_id) {
+                            return Ok(Some(final_buffer.assemble()));
+                        }
                     }
                 }
 

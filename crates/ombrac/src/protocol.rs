@@ -1,7 +1,8 @@
-use std::io::{self, Cursor};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::{
+    io::{self, Cursor},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+};
 
 pub const PROTOCOLS_VERSION: u8 = 0x01;
 pub const SECRET_LENGTH: usize = 32;
@@ -23,6 +24,14 @@ pub struct ClientHello {
 impl ClientHello {
     // Version + Secret + Options_length
     pub const FIXED_HEADER_LEN: usize = 1 + 32 + 1;
+
+    pub fn new(version: u8, secret: [u8; 32], options: Bytes) -> Self {
+        Self {
+            version,
+            secret,
+            options,
+        }
+    }
 }
 
 // +-------------+-----------------+
@@ -62,12 +71,12 @@ pub enum UdpPacket {
 }
 
 impl UdpPacket {
-    pub fn encode(self) -> Bytes {
+    pub fn encode(self) -> io::Result<Bytes> {
         let mut buf = BytesMut::new();
         match self {
             UdpPacket::Unfragmented { address, data } => {
                 buf.put_u8(PACKET_TYPE_UNFRAGMENTED);
-                address.write_to(&mut buf);
+                address.write_to(&mut buf)?;
                 buf.put(data);
             }
             UdpPacket::Fragmented {
@@ -82,12 +91,12 @@ impl UdpPacket {
                 buf.put_u8(fragment_index);
                 buf.put_u8(fragment_count);
                 if let Some(addr) = address {
-                    addr.write_to(&mut buf);
+                    addr.write_to(&mut buf)?;
                 }
                 buf.put(data);
             }
         }
-        buf.freeze()
+        Ok(buf.freeze())
     }
 
     pub fn decode(buf: Bytes) -> io::Result<Self> {
@@ -143,58 +152,125 @@ impl UdpPacket {
         data: Bytes,
         max_datagram_size: usize,
         fragment_id: u16,
-    ) -> Vec<UdpPacket> {
+    ) -> impl Iterator<Item = UdpPacket> {
+        UdpPacketSplitter::new(address, data, max_datagram_size, fragment_id)
+    }
+}
+
+pub struct UdpPacketSplitter {
+    address: Address,
+    remaining_data: Bytes,
+    max_datagram_size: usize,
+    fragment_id: u16,
+    fragment_count: u8,
+    next_index: u8,
+}
+
+impl UdpPacketSplitter {
+    pub fn new(address: Address, data: Bytes, max_datagram_size: usize, fragment_id: u16) -> Self {
+        // If there's no data to send, create an empty iterator.
         if data.is_empty() {
-            return vec![];
-        }
-
-        let mut remaining_data = data;
-        let mut chunks = Vec::new();
-
-        // Calculate overhead for the first and subsequent fragments
-        let mut addr_buf = BytesMut::new();
-        address.write_to(&mut addr_buf);
-        let first_frag_overhead = 1 + 2 + 1 + 1 + addr_buf.len(); // Type + ID + Index + Count + Address
-        let subsequent_frag_overhead = 1 + 2 + 1 + 1; // Type + ID + Index + Count
-
-        // Split the first chunk
-        let first_chunk_size = std::cmp::min(
-            remaining_data.len(),
-            max_datagram_size.saturating_sub(first_frag_overhead),
-        );
-        if first_chunk_size == 0 {
-            // Cannot even fit the header and 1 byte of data.
-            // warn!("Max datagram size too small to send even the first fragment.");
-            return vec![];
-        }
-        chunks.push(remaining_data.split_to(first_chunk_size));
-
-        // Split subsequent chunks
-        let subsequent_chunk_size = max_datagram_size.saturating_sub(subsequent_frag_overhead);
-        if subsequent_chunk_size > 0 {
-            while !remaining_data.is_empty() {
-                let chunk_size = std::cmp::min(remaining_data.len(), subsequent_chunk_size);
-                chunks.push(remaining_data.split_to(chunk_size));
-            }
-        }
-
-        if chunks.len() > u8::MAX as usize {
-            return vec![];
-        }
-
-        let fragment_count = chunks.len() as u8;
-
-        chunks
-            .into_iter()
-            .enumerate()
-            .map(|(i, chunk_data)| UdpPacket::Fragmented {
+            return Self {
+                address,
+                remaining_data: Bytes::new(),
+                max_datagram_size,
                 fragment_id,
-                fragment_index: i as u8,
-                fragment_count,
-                address: if i == 0 { Some(address.clone()) } else { None },
-                data: chunk_data,
-            })
-            .collect()
+                fragment_count: 0,
+                next_index: 0,
+            };
+        }
+
+        let first_frag_overhead = 1 + 2 + 1 + 1 + address.encoded_len();
+        let subsequent_frag_overhead = 1 + 2 + 1 + 1;
+
+        // The first fragment must be able to hold its header and at least 1 byte of data.
+        let first_chunk_size = max_datagram_size.saturating_sub(first_frag_overhead);
+        if first_chunk_size == 0 {
+            return Self {
+                address,
+                remaining_data: data, // Keep original data for consistency
+                max_datagram_size,
+                fragment_id,
+                fragment_count: 0,
+                next_index: 0,
+            };
+        }
+
+        let mut num_chunks = 0;
+        let remaining_len_after_first = data.len().saturating_sub(first_chunk_size);
+
+        if !data.is_empty() {
+            num_chunks = 1;
+        }
+
+        let subsequent_chunk_size = max_datagram_size.saturating_sub(subsequent_frag_overhead);
+        if subsequent_chunk_size > 0 && remaining_len_after_first > 0 {
+            // Ceiling division to calculate how many more chunks are needed.
+            num_chunks +=
+                (remaining_len_after_first + subsequent_chunk_size - 1) / subsequent_chunk_size;
+        }
+
+        // The number of fragments cannot exceed what a u8 can hold.
+        if num_chunks > u8::MAX as usize {
+            return Self {
+                address,
+                remaining_data: data,
+                max_datagram_size,
+                fragment_id,
+                fragment_count: 0,
+                next_index: 0,
+            };
+        }
+
+        Self {
+            address,
+            remaining_data: data,
+            max_datagram_size,
+            fragment_id,
+            fragment_count: num_chunks as u8,
+            next_index: 0,
+        }
+    }
+}
+
+impl Iterator for UdpPacketSplitter {
+    type Item = UdpPacket;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next_index >= self.fragment_count || self.remaining_data.is_empty() {
+            return None;
+        }
+
+        let (overhead, addr_option) = if self.next_index == 0 {
+            (
+                1 + 2 + 1 + 1 + self.address.encoded_len(),
+                Some(self.address.clone()),
+            )
+        } else {
+            (1 + 2 + 1 + 1, None)
+        };
+
+        let chunk_size = std::cmp::min(
+            self.remaining_data.len(),
+            self.max_datagram_size.saturating_sub(overhead),
+        );
+
+        if chunk_size == 0 {
+            // Should not happen with pre-calculation, but as a safeguard
+            return None;
+        }
+
+        let chunk_data = self.remaining_data.split_to(chunk_size);
+        let packet = UdpPacket::Fragmented {
+            fragment_id: self.fragment_id,
+            fragment_index: self.next_index,
+            fragment_count: self.fragment_count,
+            address: addr_option,
+            data: chunk_data,
+        };
+
+        self.next_index += 1;
+        Some(packet)
     }
 }
 
@@ -215,7 +291,7 @@ impl Address {
     pub const IPV6_ADDR_LEN: usize = 16;
     pub const MAX_DOMAIN_LEN: usize = 255;
 
-    pub fn write_to(&self, buf: &mut BytesMut) {
+    pub fn write_to(&self, buf: &mut BytesMut) -> io::Result<()> {
         match self {
             Address::SocketV4(addr) => {
                 buf.put_u8(Self::ADDR_TYPE_IPV4);
@@ -228,11 +304,30 @@ impl Address {
                 buf.put_u16(addr.port());
             }
             Address::Domain(domain, port) => {
+                if domain.len() > Self::MAX_DOMAIN_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Domain name is too long to be encoded: {} bytes (max 255)",
+                            domain.len()
+                        ),
+                    ));
+                }
                 buf.put_u8(Self::ADDR_TYPE_DOMAIN);
                 buf.put_u8(domain.len() as u8);
                 buf.put_slice(domain);
                 buf.put_u16(*port);
             }
+        }
+        Ok(())
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        // 1 byte for address type
+        1 + match self {
+            Address::SocketV4(_) => Self::IPV4_ADDR_LEN + Self::PORT_LEN,
+            Address::SocketV6(_) => Self::IPV6_ADDR_LEN + Self::PORT_LEN,
+            Address::Domain(domain, _) => 1 + domain.len() + Self::PORT_LEN, // 1 byte for domain length
         }
     }
 
@@ -316,27 +411,27 @@ impl TryFrom<&str> for Address {
             return Ok(Address::from(addr));
         }
 
-        if let Some((domain, port_str)) = value.rsplit_once(':')
-            && let Ok(port) = port_str.parse::<u16>()
-        {
-            if domain.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Domain name cannot be empty",
+        if let Some((domain, port_str)) = value.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                if domain.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Domain name cannot be empty",
+                    ));
+                }
+
+                if domain.len() > Self::MAX_DOMAIN_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Domain name is too long: {} bytes (max 255)", domain.len()),
+                    ));
+                }
+
+                return Ok(Address::Domain(
+                    Bytes::copy_from_slice(domain.as_bytes()),
+                    port,
                 ));
             }
-
-            if domain.len() > Self::MAX_DOMAIN_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Domain name is too long: {} bytes (max 255)", domain.len()),
-                ));
-            }
-
-            return Ok(Address::Domain(
-                Bytes::copy_from_slice(domain.as_bytes()),
-                port,
-            ));
         }
 
         Err(io::Error::new(
@@ -363,5 +458,156 @@ impl std::fmt::Display for Address {
             Self::SocketV4(addr) => write!(f, "{}", addr),
             Self::SocketV6(addr) => write!(f, "{}", addr),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reassemble_data(packets: &[UdpPacket]) -> Bytes {
+        let mut parts = Vec::new();
+        for p in packets {
+            if let UdpPacket::Fragmented { data, .. } = p {
+                parts.push(data.clone());
+            }
+        }
+        Bytes::from(parts.concat())
+    }
+
+    #[test]
+    fn test_splitter_iterator_basic_fragmentation() {
+        let addr: Address = "127.0.0.1:8080".parse::<SocketAddr>().unwrap().into();
+        let addr_len = addr.encoded_len(); // 1 (type) + 4 (ip) + 2 (port) = 7
+
+        // Overhead: 1 (type) + 2 (id) + 1 (idx) + 1 (count) = 5
+        // First fragment overhead = 5 + addr_len = 12
+        // Subsequent fragment overhead = 5
+        let max_size = 100;
+
+        let first_frag_overhead = 1 + 2 + 1 + 1 + addr_len;
+        let subsequent_frag_overhead = 1 + 2 + 1 + 1;
+
+        let first_payload_size = max_size - first_frag_overhead; // 100 - 12 = 88
+        let subsequent_payload_size = max_size - subsequent_frag_overhead; // 100 - 5 = 95
+
+        // Total data size: 88 + 95 + 10 = 193
+        let data = Bytes::from(vec![1u8; 193]);
+
+        let packets: Vec<_> =
+            UdpPacket::split_packet(addr, data.clone(), max_size, 12345).collect();
+
+        // We expect 3 fragments.
+        assert_eq!(packets.len(), 3);
+        assert_eq!(
+            packets.iter().all(|p| {
+                if let UdpPacket::Fragmented { fragment_count, .. } = p {
+                    *fragment_count == 3
+                } else {
+                    false
+                }
+            }),
+            true,
+            "All fragments should have fragment_count = 3"
+        );
+
+        // Check first fragment
+        if let UdpPacket::Fragmented {
+            fragment_index,
+            address,
+            data,
+            ..
+        } = &packets[0]
+        {
+            assert_eq!(*fragment_index, 0);
+            assert!(address.is_some());
+            assert_eq!(data.len(), first_payload_size);
+        } else {
+            panic!("Expected a fragmented packet");
+        }
+
+        // Check second fragment
+        if let UdpPacket::Fragmented {
+            fragment_index,
+            address,
+            data,
+            ..
+        } = &packets[1]
+        {
+            assert_eq!(*fragment_index, 1);
+            assert!(address.is_none());
+            assert_eq!(data.len(), subsequent_payload_size);
+        } else {
+            panic!("Expected a fragmented packet");
+        }
+
+        // Check third fragment
+        if let UdpPacket::Fragmented {
+            fragment_index,
+            address,
+            data,
+            ..
+        } = &packets[2]
+        {
+            assert_eq!(*fragment_index, 2);
+            assert!(address.is_none());
+            assert_eq!(data.len(), 10);
+        } else {
+            panic!("Expected a fragmented packet");
+        }
+
+        // Verify that the reassembled data matches the original.
+        assert_eq!(reassemble_data(&packets), data);
+    }
+
+    #[test]
+    fn test_splitter_single_fragment() {
+        let addr: Address = "127.0.0.1:8080".parse::<SocketAddr>().unwrap().into();
+        let data = Bytes::from_static(b"this fits in one packet");
+        let max_size = 100;
+
+        let packets: Vec<_> = UdpPacket::split_packet(addr, data.clone(), max_size, 1).collect();
+
+        assert_eq!(packets.len(), 1);
+        if let UdpPacket::Fragmented {
+            fragment_index,
+            fragment_count,
+            address,
+            data: packet_data,
+            ..
+        } = &packets[0]
+        {
+            assert_eq!(*fragment_index, 0);
+            assert_eq!(*fragment_count, 1);
+            assert!(address.is_some());
+            assert_eq!(*packet_data, data);
+        } else {
+            panic!("Expected a fragmented packet");
+        }
+    }
+
+    #[test]
+    fn test_splitter_empty_data_yields_no_packets() {
+        let addr: Address = "127.0.0.1:8080".parse::<SocketAddr>().unwrap().into();
+        let data = Bytes::new();
+        let max_size = 100;
+
+        let packets: Vec<_> = UdpPacket::split_packet(addr, data, max_size, 1).collect();
+
+        // The iterator should be empty for empty data.
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn test_splitter_max_size_too_small_yields_no_packets() {
+        let addr: Address = "127.0.0.1:8080".parse::<SocketAddr>().unwrap().into();
+        let data = Bytes::from_static(b"some data");
+        // Set max_size to be smaller than the header, so no packets can be formed.
+        let max_size = 10;
+
+        let packets: Vec<_> = UdpPacket::split_packet(addr, data, max_size, 1).collect();
+
+        // The iterator should be empty if no packets can be formed.
+        assert!(packets.is_empty());
     }
 }
