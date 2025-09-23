@@ -5,12 +5,6 @@ pub use tokio_util::codec::{Decoder, Encoder};
 
 use crate::protocol::{Address, ClientConnect, ClientHello};
 
-/// Represents the two types of messages that can be sent upstream.
-/// The protocol is designed as follows:
-///
-/// A single byte message type header, followed by the message payload.
-/// - 0x01: Hello
-/// - 0x02: Connect
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpstreamMessage {
     Hello(ClientHello),
@@ -89,18 +83,8 @@ impl Encoder<UpstreamMessage> for ProtocolCodec {
     fn encode(&mut self, item: UpstreamMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
             UpstreamMessage::Hello(hello) => {
-                if hello.options.len() > u8::MAX as usize {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Options length cannot exceed 255 bytes",
-                    ));
-                }
-                dst.reserve(1 + ClientHello::FIXED_HEADER_LEN + hello.options.len());
                 dst.put_u8(MSG_TYPE_HELLO);
-                dst.put_u8(hello.version);
-                dst.put_slice(&hello.secret);
-                dst.put_u8(hello.options.len() as u8);
-                dst.put_slice(&hello.options);
+                hello.encode(dst)?;
             }
             UpstreamMessage::Connect(connect) => {
                 dst.reserve(1 + connect.address.encoded_len());

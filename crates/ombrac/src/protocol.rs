@@ -13,24 +13,37 @@ pub type Secret = [u8; SECRET_LENGTH];
 // |   Version   |             Secret             |  Options Length  |           Options            |
 // |  (1 byte)   |           (32 bytes)           |     (1 byte)     |  (value of Options Length)   |
 // +-------------+--------------------------------+------------------+------------------------------+
-// |<-                Fixed-size Header (34 bytes)                 ->|
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHello {
     pub version: u8,
-    pub secret: [u8; 32],
+    pub secret: Secret,
     pub options: Bytes,
 }
 
 impl ClientHello {
-    // Version + Secret + Options_length
-    pub const FIXED_HEADER_LEN: usize = 1 + 32 + 1;
+    pub const FIXED_HEADER_LEN: usize = 1 + SECRET_LENGTH + 1;
 
-    pub fn new(version: u8, secret: [u8; 32], options: Bytes) -> Self {
+    pub fn new(version: u8, secret: Secret, options: Bytes) -> Self {
         Self {
             version,
             secret,
             options,
         }
+    }
+
+    pub fn encode(&self, dst: &mut BytesMut) -> io::Result<()> {
+        if self.options.len() > u8::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Options length cannot exceed 255 bytes",
+            ));
+        }
+        dst.reserve(Self::FIXED_HEADER_LEN + self.options.len());
+        dst.put_u8(self.version);
+        dst.put_slice(&self.secret);
+        dst.put_u8(self.options.len() as u8);
+        dst.put_slice(&self.options);
+        Ok(())
     }
 }
 
@@ -64,7 +77,6 @@ pub enum UdpPacket {
         fragment_id: u16,
         fragment_index: u8,
         fragment_count: u8,
-        // The address is only present in the first fragment (index 0).
         address: Option<Address>,
         data: Bytes,
     },
@@ -168,7 +180,6 @@ pub struct UdpPacketSplitter {
 
 impl UdpPacketSplitter {
     pub fn new(address: Address, data: Bytes, max_datagram_size: usize, fragment_id: u16) -> Self {
-        // If there's no data to send, create an empty iterator.
         if data.is_empty() {
             return Self {
                 address,
@@ -183,12 +194,11 @@ impl UdpPacketSplitter {
         let first_frag_overhead = 1 + 2 + 1 + 1 + address.encoded_len();
         let subsequent_frag_overhead = 1 + 2 + 1 + 1;
 
-        // The first fragment must be able to hold its header and at least 1 byte of data.
         let first_chunk_size = max_datagram_size.saturating_sub(first_frag_overhead);
         if first_chunk_size == 0 {
             return Self {
                 address,
-                remaining_data: data, // Keep original data for consistency
+                remaining_data: Bytes::new(), // Clear data to ensure it's an empty iterator
                 max_datagram_size,
                 fragment_id,
                 fragment_count: 0,
@@ -196,24 +206,28 @@ impl UdpPacketSplitter {
             };
         }
 
-        let mut num_chunks = 0;
+        let mut num_chunks = 1;
         let remaining_len_after_first = data.len().saturating_sub(first_chunk_size);
-
-        if !data.is_empty() {
-            num_chunks = 1;
-        }
 
         let subsequent_chunk_size = max_datagram_size.saturating_sub(subsequent_frag_overhead);
         if subsequent_chunk_size > 0 && remaining_len_after_first > 0 {
-            // Ceiling division to calculate how many more chunks are needed.
             num_chunks += remaining_len_after_first.div_ceil(subsequent_chunk_size);
+        } else if remaining_len_after_first > 0 {
+            // Not enough space for subsequent fragments
+            return Self {
+                address,
+                remaining_data: Bytes::new(),
+                max_datagram_size,
+                fragment_id,
+                fragment_count: 0,
+                next_index: 0,
+            };
         }
 
-        // The number of fragments cannot exceed what a u8 can hold.
         if num_chunks > u8::MAX as usize {
             return Self {
                 address,
-                remaining_data: data,
+                remaining_data: Bytes::new(),
                 max_datagram_size,
                 fragment_id,
                 fragment_count: 0,
@@ -255,7 +269,7 @@ impl Iterator for UdpPacketSplitter {
         );
 
         if chunk_size == 0 {
-            // Should not happen with pre-calculation, but as a safeguard
+            self.fragment_count = 0;
             return None;
         }
 
@@ -322,11 +336,10 @@ impl Address {
     }
 
     pub fn encoded_len(&self) -> usize {
-        // 1 byte for address type
         1 + match self {
             Address::SocketV4(_) => Self::IPV4_ADDR_LEN + Self::PORT_LEN,
             Address::SocketV6(_) => Self::IPV6_ADDR_LEN + Self::PORT_LEN,
-            Address::Domain(domain, _) => 1 + domain.len() + Self::PORT_LEN, // 1 byte for domain length
+            Address::Domain(domain, _) => 1 + domain.len() + Self::PORT_LEN,
         }
     }
 
@@ -409,27 +422,27 @@ impl TryFrom<&str> for Address {
             return Ok(Address::from(addr));
         }
 
-        if let Some((domain, port_str)) = value.rsplit_once(':')
-            && let Ok(port) = port_str.parse::<u16>()
-        {
-            if domain.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Domain name cannot be empty",
+        if let Some((domain, port_str)) = value.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                if domain.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Domain name cannot be empty",
+                    ));
+                }
+
+                if domain.len() > Self::MAX_DOMAIN_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Domain name is too long: {} bytes (max 255)", domain.len()),
+                    ));
+                }
+
+                return Ok(Address::Domain(
+                    Bytes::copy_from_slice(domain.as_bytes()),
+                    port,
                 ));
             }
-
-            if domain.len() > Self::MAX_DOMAIN_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Domain name is too long: {} bytes (max 255)", domain.len()),
-                ));
-            }
-
-            return Ok(Address::Domain(
-                Bytes::copy_from_slice(domain.as_bytes()),
-                port,
-            ));
         }
 
         Err(io::Error::new(

@@ -47,6 +47,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "sig
 tokio-util = { workspace = true, features = ["codec"] }
 clap = { workspace = true, features = ["std", "derive", "color", "help", "usage", "error-context", "suggestions"] }
 serde = { workspace = true, features = ["derive"] }
+moka = { workspace = true, features = ["future"] }
 figment = { workspace = true, features = ["json"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
