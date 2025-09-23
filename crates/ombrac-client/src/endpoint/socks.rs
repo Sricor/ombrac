@@ -87,19 +87,19 @@ where
                             util::ombrac_addr_to_socks(origin_addr).unwrap(),
                             data,
                         );
-                        if let Err(e) = inbound_udp_clone
+                        if let Err(_e) = inbound_udp_clone
                             .send_to(&response_packet.to_bytes(), client_udp_addr)
                             .await
                         {
                             error!(
                                 "Failed to send UDP packet to SOCKS client {}: {}",
-                                client_udp_addr, e
+                                client_udp_addr, _e
                             );
                             break;
                         }
                     }
-                    Err(e) => {
-                        error!("Error reading datagram from ombrac client: {}", e);
+                    Err(_e) => {
+                        error!("Error reading datagram from ombrac client: {}", _e);
                         break;
                     }
                 }
@@ -203,10 +203,7 @@ where
                 }
             }
             Request::Associate(_) => {
-                if let Err(e) = self.handle_associate(stream).await {
-                    error!("SOCKS associate failed for {}: {}", stream.peer_addr(), e);
-                    return Err(e);
-                }
+                self.handle_associate(stream).await?
             }
             _ => {
                 stream.write_response_unsupported().await?;

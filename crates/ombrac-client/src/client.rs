@@ -137,8 +137,8 @@ where
 
             let packet = match UdpPacket::decode(packet_bytes) {
                 Ok(packet) => packet,
-                Err(e) => {
-                    warn!("Failed to decode UDP packet: {}", e);
+                Err(_e) => {
+                    warn!("Failed to decode UDP packet: {}", _e);
                     continue;
                 }
             };
@@ -150,8 +150,8 @@ where
                 Ok(None) => {
                     continue;
                 }
-                Err(e) => {
-                    warn!("UDP reassembly error: {}", e);
+                Err(_e) => {
+                    warn!("UDP reassembly error: {}", _e);
                     continue;
                 }
             }
