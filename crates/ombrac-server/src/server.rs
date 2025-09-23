@@ -230,10 +230,19 @@ impl<T: Acceptor> Server<T> {
         let upstream_cache = dns_cache.clone();
         let upstream_handler = tokio::spawn(async move {
             loop {
-                let packet_bytes = upstream_conn.read_datagram().await?;
-                let packet = UdpPacket::decode(packet_bytes)?;
+                let maybe_reconstructed_packet = async {
+                    loop {
+                        let packet_bytes = upstream_conn.read_datagram().await?;
+                        let packet = UdpPacket::decode(packet_bytes)?;
 
-                if let Some((address, data)) = reassembler.process(packet).await? {
+                        if let Some(reconstructed) = reassembler.process(packet).await? {
+                            return Ok::<(Address, Bytes), io::Error>(reconstructed);
+                        }
+                    }
+                }
+                .await;
+
+                if let Ok((address, data)) = maybe_reconstructed_packet {
                     match address {
                         Address::SocketV4(addr) => {
                             upstream_sock.send_to(&data, addr).await?;
