@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
 use std::{
     io,
@@ -63,17 +63,19 @@ impl ReassemblyBuffer {
         self.received_count == self.total_count
     }
 
-    fn assemble(&mut self) -> (Address, Bytes) {
+    fn assemble(mut self) -> (Address, Bytes) {
         let total_len = self
             .fragments
             .iter()
-            .map(|f| f.as_ref().unwrap().len())
+            .map(|f| f.as_ref().map_or(0, |b| b.len()))
             .sum();
-        let mut combined = Vec::with_capacity(total_len);
+        let mut combined = BytesMut::with_capacity(total_len);
         for fragment in self.fragments.iter_mut() {
-            combined.extend_from_slice(fragment.take().unwrap().as_ref());
+            if let Some(data) = fragment.take() {
+                combined.put(data);
+            }
         }
-        (self.address.clone(), Bytes::from(combined))
+        (self.address, combined.freeze())
     }
 }
 
@@ -83,6 +85,12 @@ pub struct UdpReassembler {
     map: Arc<DashMap<FragmentID, ReassemblyBuffer>>,
     max_concurrent_reassemblies: usize,
     _cleanup_handle: JoinHandle<()>,
+}
+
+impl Drop for UdpReassembler {
+    fn drop(&mut self) {
+        self._cleanup_handle.abort();
+    }
 }
 
 impl Default for UdpReassembler {
@@ -123,6 +131,7 @@ impl UdpReassembler {
                 fragment_index,
                 ..
             } => {
+                // TODO:
                 if fragment_index == 0 {
                     if self.map.len() >= self.max_concurrent_reassemblies {
                         return Ok(None);
@@ -144,9 +153,10 @@ impl UdpReassembler {
 
                 if let Some(buffer) = self.map.get(&fragment_id)
                     && buffer.is_complete()
-                        && let Some((_, mut final_buffer)) = self.map.remove(&fragment_id) {
-                            return Ok(Some(final_buffer.assemble()));
-                        }
+                    && let Some((_, final_buffer)) = self.map.remove(&fragment_id)
+                {
+                    return Ok(Some(final_buffer.assemble()));
+                }
 
                 Ok(None)
             }

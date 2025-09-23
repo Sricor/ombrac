@@ -103,7 +103,7 @@ impl Encoder<UpstreamMessage> for ProtocolCodec {
                 dst.put_slice(&hello.options);
             }
             UpstreamMessage::Connect(connect) => {
-                dst.reserve(1 + 1 + 16 + 2);
+                dst.reserve(1 + connect.address.encoded_len());
                 dst.put_u8(MSG_TYPE_CONNECT);
                 connect.address.write_to(dst)?;
             }

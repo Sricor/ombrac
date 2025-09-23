@@ -202,9 +202,7 @@ where
                     }
                 }
             }
-            Request::Associate(_) => {
-                self.handle_associate(stream).await?
-            }
+            Request::Associate(_) => self.handle_associate(stream).await?,
             _ => {
                 stream.write_response_unsupported().await?;
             }

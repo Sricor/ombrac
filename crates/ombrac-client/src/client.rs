@@ -1,5 +1,3 @@
-// client.rs
-
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -12,7 +10,7 @@ use tokio_util::codec::Encoder;
 
 use ombrac::{
     protocol::{Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
-    reassembly::UdpReassembler, // 引入 UdpReassembler
+    reassembly::UdpReassembler,
     upstream::{ProtocolCodec, UpstreamMessage},
 };
 use ombrac_macros::{info, warn};
@@ -24,7 +22,6 @@ pub struct Client<T, C> {
     reconnect_lock: Mutex<()>,
     secret: Secret,
     options: Bytes,
-    // 新增字段
     fragment_id_counter: AtomicU16,
     reassembler: UdpReassembler,
 }

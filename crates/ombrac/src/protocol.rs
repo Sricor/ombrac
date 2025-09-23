@@ -206,8 +206,7 @@ impl UdpPacketSplitter {
         let subsequent_chunk_size = max_datagram_size.saturating_sub(subsequent_frag_overhead);
         if subsequent_chunk_size > 0 && remaining_len_after_first > 0 {
             // Ceiling division to calculate how many more chunks are needed.
-            num_chunks +=
-                remaining_len_after_first.div_ceil(subsequent_chunk_size);
+            num_chunks += remaining_len_after_first.div_ceil(subsequent_chunk_size);
         }
 
         // The number of fragments cannot exceed what a u8 can hold.
@@ -381,10 +380,9 @@ impl Address {
                         "Not enough data for domain and port",
                     ));
                 }
-                let mut domain_bytes = vec![0u8; domain_len];
-                buf.copy_to_slice(&mut domain_bytes);
+                let domain_bytes = buf.copy_to_bytes(domain_len);
                 let port = buf.get_u16();
-                Ok(Address::Domain(Bytes::from(domain_bytes), port))
+                Ok(Address::Domain(domain_bytes, port))
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -412,26 +410,27 @@ impl TryFrom<&str> for Address {
         }
 
         if let Some((domain, port_str)) = value.rsplit_once(':')
-            && let Ok(port) = port_str.parse::<u16>() {
-                if domain.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Domain name cannot be empty",
-                    ));
-                }
-
-                if domain.len() > Self::MAX_DOMAIN_LEN {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Domain name is too long: {} bytes (max 255)", domain.len()),
-                    ));
-                }
-
-                return Ok(Address::Domain(
-                    Bytes::copy_from_slice(domain.as_bytes()),
-                    port,
+            && let Ok(port) = port_str.parse::<u16>()
+        {
+            if domain.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Domain name cannot be empty",
                 ));
             }
+
+            if domain.len() > Self::MAX_DOMAIN_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Domain name is too long: {} bytes (max 255)", domain.len()),
+                ));
+            }
+
+            return Ok(Address::Domain(
+                Bytes::copy_from_slice(domain.as_bytes()),
+                port,
+            ));
+        }
 
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
