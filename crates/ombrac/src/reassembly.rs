@@ -13,11 +13,13 @@ struct ReassemblyBuffer {
     received_count: u8,
     total_count: u8,
     address: Address,
+    session_id: u64,
 }
 
 impl ReassemblyBuffer {
     fn new(first_fragment: UdpPacket) -> Option<Self> {
         if let UdpPacket::Fragmented {
+            session_id,
             fragment_index: 0,
             fragment_count,
             address: Some(address),
@@ -32,6 +34,7 @@ impl ReassemblyBuffer {
                 received_count: 1,
                 total_count: fragment_count,
                 address,
+                session_id,
             })
         } else {
             None
@@ -57,7 +60,7 @@ impl ReassemblyBuffer {
         self.received_count > 0 && self.received_count == self.total_count
     }
 
-    fn assemble_and_take(&mut self) -> (Address, Bytes) {
+    fn assemble_and_take(&mut self) -> (u64, Address, Bytes) {
         let total_len = self
             .fragments
             .iter()
@@ -70,14 +73,16 @@ impl ReassemblyBuffer {
                 combined.put(data);
             }
         }
-        (self.address.clone(), combined.freeze())
+        (self.session_id, self.address.clone(), combined.freeze())
     }
 }
 
-type FragmentID = u16;
+// The key for the cache is a combination of the session and fragment IDs
+// to ensure fragments from different sessions don't collide.
+type CacheKey = (u64, u16);
 
 pub struct UdpReassembler {
-    cache: Cache<FragmentID, Arc<Mutex<ReassemblyBuffer>>>,
+    cache: Cache<CacheKey, Arc<Mutex<ReassemblyBuffer>>>,
 }
 
 impl Default for UdpReassembler {
@@ -99,34 +104,40 @@ impl UdpReassembler {
         Self { cache }
     }
 
-    pub async fn process(&self, packet: UdpPacket) -> io::Result<Option<(Address, Bytes)>> {
+    pub async fn process(&self, packet: UdpPacket) -> io::Result<Option<(u64, Address, Bytes)>> {
         match packet {
-            UdpPacket::Unfragmented { address, data } => Ok(Some((address, data))),
+            UdpPacket::Unfragmented {
+                session_id,
+                address,
+                data,
+            } => Ok(Some((session_id, address, data))),
             UdpPacket::Fragmented {
+                session_id,
                 fragment_id,
                 fragment_index,
                 ..
             } => {
+                let cache_key = (session_id, fragment_id);
                 if fragment_index == 0 {
                     if let Some(mut buffer) = ReassemblyBuffer::new(packet) {
                         if buffer.is_complete() {
                             return Ok(Some(buffer.assemble_and_take()));
                         }
                         let buffer_lock = Arc::new(Mutex::new(buffer));
-                        self.cache.insert(fragment_id, buffer_lock).await;
+                        self.cache.insert(cache_key, buffer_lock).await;
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "First fragment packet is malformed",
                         ));
                     }
-                } else if let Some(buffer_lock) = self.cache.get(&fragment_id).await {
+                } else if let Some(buffer_lock) = self.cache.get(&cache_key).await {
                     let mut buffer = buffer_lock.lock().await;
                     buffer.add_fragment(packet);
 
                     if buffer.is_complete() {
                         let assembled_data = buffer.assemble_and_take();
-                        self.cache.invalidate(&fragment_id).await;
+                        self.cache.invalidate(&cache_key).await;
                         return Ok(Some(assembled_data));
                     }
                 }

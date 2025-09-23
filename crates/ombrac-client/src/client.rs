@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use arc_swap::{ArcSwap, Guard};
 use bytes::{Bytes, BytesMut};
@@ -23,6 +23,7 @@ pub struct Client<T, C> {
     secret: Secret,
     options: Bytes,
     fragment_id_counter: AtomicU16,
+    session_id_counter: AtomicU64,
     reassembler: UdpReassembler,
 }
 
@@ -42,8 +43,13 @@ where
             secret,
             options,
             fragment_id_counter: AtomicU16::new(0),
+            session_id_counter: AtomicU64::new(1), // Start from 1
             reassembler: UdpReassembler::default(),
         })
+    }
+
+    pub fn new_session_id(&self) -> u64 {
+        self.session_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
     async fn client_hello(transport: &T, secret: Secret, options: Bytes) -> io::Result<C> {
@@ -73,7 +79,12 @@ where
         Ok(stream)
     }
 
-    pub async fn send_datagram(&self, dest_addr: Address, data: Bytes) -> io::Result<()> {
+    pub async fn send_datagram(
+        &self,
+        session_id: u64,
+        dest_addr: Address,
+        data: Bytes,
+    ) -> io::Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -81,11 +92,13 @@ where
         let connection = self.connection.load();
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
-        let overhead = 1 + dest_addr.encoded_len(); // 1 byte for type + address length
+        // Overhead includes: type(1) + session_id(8) + address
+        let overhead = 1 + 8 + dest_addr.encoded_len();
         let predicted_len = overhead + data.len();
 
         if predicted_len <= max_datagram_size {
             let unfragmented_packet = UdpPacket::Unfragmented {
+                session_id,
                 address: dest_addr,
                 data,
             };
@@ -103,8 +116,13 @@ where
             );
 
             let fragment_id = self.fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-            let fragments =
-                UdpPacket::split_packet(dest_addr, data, max_datagram_size, fragment_id);
+            let fragments = UdpPacket::split_packet(
+                session_id,
+                dest_addr,
+                data,
+                max_datagram_size,
+                fragment_id,
+            );
 
             let mut fragments = fragments.peekable();
             if fragments.peek().is_none() {
@@ -126,7 +144,7 @@ where
         Ok(())
     }
 
-    pub async fn read_datagram(&self) -> io::Result<(Address, Bytes)> {
+    pub async fn read_datagram(&self) -> io::Result<(u64, Address, Bytes)> {
         loop {
             let packet_bytes = self
                 .with_retry(|conn| async move { conn.read_datagram().await })
@@ -141,10 +159,11 @@ where
             };
 
             match self.reassembler.process(packet).await {
-                Ok(Some((address, data))) => {
-                    return Ok((address, data));
+                Ok(Some((session_id, address, data))) => {
+                    return Ok((session_id, address, data));
                 }
                 Ok(None) => {
+                    // This is a fragment, not a complete packet yet. Continue reading.
                     continue;
                 }
                 Err(_e) => {
