@@ -187,13 +187,11 @@ where
                     }
                     Err(err) => {
                         error!("SOCKS connect to {} failed: {}", address, err);
-                        // 注意：此时可能无法再向stream写入错误，因为可能已经被copy_bidirectional占用了
                         return Err(err);
                     }
                 }
             }
             Request::Associate(_) => {
-                // 调用新的 handle_associate 方法
                 if let Err(e) = self.handle_associate(stream).await {
                     error!("SOCKS associate failed for {}: {}", stream.peer_addr(), e);
                     return Err(e);
