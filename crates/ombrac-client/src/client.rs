@@ -7,6 +7,7 @@ use arc_swap::{ArcSwap, Guard};
 use bytes::Bytes;
 use dashmap::DashMap;
 use ombrac::reassembly::UdpReassembler;
+use tokio::io::AsyncReadExt;
 use tokio::{
     io::AsyncWriteExt,
     sync::{Mutex, mpsc},
@@ -219,7 +220,6 @@ where
         let connection = transport.connect().await?;
         let mut stream = connection.open_bidirectional().await?;
 
-        // CHANGED: Use our protocol helper to encode the message
         let hello_message = UpstreamMessage::Hello(ClientHello {
             version: PROTOCOLS_VERSION,
             secret,
@@ -228,11 +228,19 @@ where
 
         let encoded_bytes = protocol::encode(&hello_message)?;
 
-        // Write length prefix + payload
         stream.write_u32(encoded_bytes.len() as u32).await?;
         stream.write_all(&encoded_bytes).await?;
+        stream.shutdown().await?;
 
-        Ok(connection)
+        let mut buf = [0; 1];
+        match stream.read(&mut buf).await {
+            Ok(0) => Ok(connection),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unexpected data received during handshake",
+            )),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -269,7 +277,7 @@ where
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
         // A reasonable guess for payload size, leaving room for headers.
-        let max_payload_size = max_datagram_size.saturating_sub(128);
+        let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
 
         if data.len() <= max_payload_size {
             let unfragmented_packet = UdpPacket::Unfragmented {
