@@ -123,28 +123,40 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
         tokio::spawn(async move {
             let server = Server::new(acceptor, server_secret);
-            server.accept_loop(shutdown_rx).await.unwrap();
+            let _ = server.accept_loop(shutdown_rx).await;
         });
 
         let client_result = Client::new(initiator, client_secret, None).await;
 
+        if let Err(err) = client_result {
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::PermissionDenied,
+                "Error kind should be PermissionDenied for invalid secret"
+            );
+        } else {
+            panic!("Client::new should have failed with an invalid secret, but it succeeded.");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handshake_with_valid_secret() {
+        let (initiator, acceptor) = mock_transport_pair();
+        let secret = random_secret();
+
+        let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        tokio::spawn(async move {
+            let server = Server::new(acceptor, secret);
+            let _ = server.accept_loop(shutdown_rx).await;
+        });
+
+        // The handshake happens here. We expect it to succeed.
+        let client_result = Client::new(initiator, secret, None).await;
+
         assert!(
             client_result.is_ok(),
-            "Client should initialize, as handshake failure happens on first operation"
-        );
-        let client = client_result.unwrap();
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let dest_addr: Address = "1.2.3.4:80".try_into().unwrap();
-        let stream_result = client.open_bidirectional(dest_addr).await;
-
-        assert!(stream_result.is_err()); // Wrong Secret
-        let err = stream_result.unwrap_err();
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::ConnectionReset,
-            "Connection should be reset due to invalid secret"
+            "Client::new should succeed with a valid secret. Error: {:?}",
+            client_result.err()
         );
     }
 }

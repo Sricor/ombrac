@@ -5,8 +5,9 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use moka::future::Cache;
+use ombrac::protocol::{HandshakeError, ServerHandshakeResponse};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpStream, UdpSocket},
@@ -82,23 +83,32 @@ impl<T: Acceptor> Server<T> {
 
         match framed_control.next().await {
             Some(Ok(payload)) => {
-                // FIXED: Use our protocol helper to decode the message correctly
                 let hello_message: UpstreamMessage = protocol::decode(&payload)?;
 
                 if let UpstreamMessage::Hello(hello) = hello_message {
-                    if hello.version != PROTOCOLS_VERSION {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Unsupported protocol version",
-                        ));
-                    }
-                    if hello.secret != secret {
+                    let response = if hello.version != PROTOCOLS_VERSION {
+                        warn!(
+                            "{} Client handshake failed: Unsupported protocol version",
+                            peer_addr
+                        );
+                        ServerHandshakeResponse::Err(HandshakeError::UnsupportedVersion)
+                    } else if hello.secret != secret {
+                        warn!("{} Client handshake failed: Invalid secret", peer_addr);
+                        ServerHandshakeResponse::Err(HandshakeError::InvalidSecret)
+                    } else {
+                        debug!("{} Client handshake successful", peer_addr);
+                        ServerHandshakeResponse::Ok
+                    };
+
+                    let response_bytes = protocol::encode(&response)?;
+                    framed_control.send(response_bytes).await?;
+
+                    if let ServerHandshakeResponse::Err(_) = response {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
-                            "Invalid secret",
+                            "Handshake failed",
                         ));
                     }
-                    debug!("{} Client handshake successful", peer_addr);
                 } else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,

@@ -6,20 +6,23 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use arc_swap::{ArcSwap, Guard};
 use bytes::Bytes;
 use dashmap::DashMap;
+use futures::{SinkExt, StreamExt};
+use ombrac::codec::length_codec;
+use ombrac::protocol::{HandshakeError, ServerHandshakeResponse};
 use ombrac::reassembly::UdpReassembler;
-use tokio::io::AsyncReadExt;
 use tokio::{
     io::AsyncWriteExt,
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
+use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use ombrac::{
     codec::UpstreamMessage,
     protocol::{self, Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
 };
-use ombrac_macros::{debug, info, warn};
+use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Connection, Initiator};
 
 type UdpDispatcher = mpsc::Sender<(Bytes, Address)>;
@@ -228,18 +231,36 @@ where
 
         let encoded_bytes = protocol::encode(&hello_message)?;
 
-        stream.write_u32(encoded_bytes.len() as u32).await?;
-        stream.write_all(&encoded_bytes).await?;
-        stream.shutdown().await?;
+        let mut framed = Framed::new(&mut stream, length_codec());
+        framed.send(encoded_bytes).await?;
 
-        let mut buf = [0; 1];
-        match stream.read(&mut buf).await {
-            Ok(0) => Ok(connection),
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unexpected data received during handshake",
+        match framed.next().await {
+            Some(Ok(payload)) => {
+                let response: ServerHandshakeResponse = protocol::decode(&payload)?;
+                match response {
+                    ServerHandshakeResponse::Ok => {
+                        info!("Handshake with server successful.");
+                        stream.shutdown().await?;
+                        Ok(connection)
+                    }
+                    ServerHandshakeResponse::Err(e) => {
+                        error!("Handshake failed: {:?}", e);
+                        let err_kind = match e {
+                            HandshakeError::InvalidSecret => io::ErrorKind::PermissionDenied,
+                            _ => io::ErrorKind::InvalidData,
+                        };
+                        Err(io::Error::new(
+                            err_kind,
+                            format!("Server rejected handshake: {:?}", e),
+                        ))
+                    }
+                }
+            }
+            Some(Err(e)) => Err(e),
+            None => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Connection closed by server during handshake",
             )),
-            Err(e) => Err(e),
         }
     }
 }
@@ -277,7 +298,7 @@ where
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
         // A reasonable guess for payload size, leaving room for headers.
-        let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
+        let max_payload_size = max_datagram_size.saturating_sub(128);
 
         if data.len() <= max_payload_size {
             let unfragmented_packet = UdpPacket::Unfragmented {
