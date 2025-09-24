@@ -1,109 +1,19 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
-use dashmap::DashMap;
+use bytes::Bytes;
 use socks_lib::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use socks_lib::v5::server::Handler;
 use socks_lib::v5::{
-    Address as Socks5Address, Request, Response, Stream, UdpPacket as SocksUdpPacket,
+    Address as Socks5Address, Request, Response, Stream, UdpPacket
 };
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
-use ombrac::protocol::Address as OmbracAddress;
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Connection, Initiator};
 
-use crate::client::Client;
-
-type UdpMessage = (OmbracAddress, bytes::Bytes);
-
-/// Manages UDP sessions by dispatching incoming datagrams from the client
-/// to the appropriate handler based on the session ID.
-struct UdpDispatcher<T, C>
-where
-    T: Initiator<Connection = C> + Send + Sync + 'static,
-    C: Connection + Send + Sync + 'static,
-{
-    client: Arc<Client<T, C>>,
-    sessions: DashMap<u64, mpsc::Sender<UdpMessage>>,
-    token: CancellationToken,
-}
-
-impl<T, C> UdpDispatcher<T, C>
-where
-    T: Initiator<Connection = C> + Send + Sync + 'static,
-    C: Connection + Send + Sync + 'static,
-{
-    fn new(client: Arc<Client<T, C>>) -> Arc<Self> {
-        let dispatcher = Arc::new(Self {
-            client,
-            sessions: DashMap::new(),
-            token: CancellationToken::new(),
-        });
-        Self::spawn_reader_task(Arc::clone(&dispatcher));
-        dispatcher
-    }
-
-    /// Spawns the main task that reads all datagrams from the remote
-    /// and dispatches them to session-specific channels.
-    fn spawn_reader_task(self: Arc<Self>) {
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = self.token.cancelled() => {
-                        info!("UDP dispatcher reader task shutting down.");
-                        break;
-                    }
-                    result = self.client.read_datagram() => {
-                        match result {
-                            Ok((session_id, addr, data)) => {
-                                if let Some(tx) = self.sessions.get(&session_id) {
-                                    if tx.send((addr, data)).await.is_err() {
-                                        // Receiver was dropped, session likely ended.
-                                        self.sessions.remove(&session_id);
-                                    }
-                                } else {
-                                    warn!("Received UDP packet for unknown session ID: {}", session_id);
-                                }
-                            }
-                            Err(_e) => {
-                                error!("Error reading datagram from client, UDP dispatcher closing: {}", _e);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    /// Registers a new UDP session, returning a unique session ID and a channel receiver.
-    fn register(&self) -> (u64, mpsc::Receiver<UdpMessage>) {
-        let session_id = self.client.new_session_id();
-        let (tx, rx) = mpsc::channel(128);
-        self.sessions.insert(session_id, tx);
-        (session_id, rx)
-    }
-
-    /// Unregisters a UDP session, cleaning up its resources.
-    fn deregister(&self, session_id: u64) {
-        self.sessions.remove(&session_id);
-    }
-}
-
-impl<T, C> Drop for UdpDispatcher<T, C>
-where
-    T: Initiator<Connection = C> + Send + Sync + 'static,
-    C: Connection + Send + Sync + 'static,
-{
-    fn drop(&mut self) {
-        self.token.cancel();
-    }
-}
+use crate::client::{Client, UdpSession};
 
 pub struct CommandHandler<T, C>
 where
@@ -111,7 +21,6 @@ where
     C: Connection + Send + Sync + 'static,
 {
     client: Arc<Client<T, C>>,
-    udp_dispatcher: Arc<UdpDispatcher<T, C>>,
 }
 
 impl<T, C> CommandHandler<T, C>
@@ -120,11 +29,7 @@ where
     C: Connection + Send + Sync + 'static,
 {
     pub fn new(client: Arc<Client<T, C>>) -> Self {
-        let udp_dispatcher = UdpDispatcher::new(Arc::clone(&client));
-        Self {
-            client,
-            udp_dispatcher,
-        }
+        Self { client }
     }
 
     async fn handle_connect(
@@ -132,151 +37,104 @@ where
         address: Socks5Address,
         stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> io::Result<(u64, u64)> {
+        info!("SOCKS: Handling CONNECT to {}", address);
         let addr = util::socks_to_ombrac_addr(address)?;
         let mut outbound = self.client.open_bidirectional(addr).await?;
         ombrac_transport::io::copy_bidirectional(stream, &mut outbound).await
     }
 
+    /// Handles the SOCKS5 UDP ASSOCIATE command.
     async fn handle_associate(
         &self,
-        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
+        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin + Send>,
     ) -> io::Result<()> {
-        let inbound_udp = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-        let inbound_addr = inbound_udp.local_addr()?;
+        info!("SOCKS: Handling UDP ASSOCIATE from {}", stream.peer_addr());
 
-        // The address that the SOCKS client should use for its replies.
-        let reply_addr = SocketAddr::new(stream.local_addr().ip(), inbound_addr.port());
-        let bind_addr = Socks5Address::from(reply_addr);
-        stream
-            .write_response(&Response::Success(&bind_addr))
-            .await?;
+        // 1. 创建一个 ombrac UDP 会话，用于通过隧道转发所有流量。
+        let udp_session = self.client.connect_udp();
 
-        info!(
-            "SOCKS UDP association created for {}. Client should send UDP to {}",
-            stream.peer_addr().ip(),
-            bind_addr
-        );
+        // 2. 在本地创建一个 UDP Socket，用于接收来自 SOCKS 客户端的数据。
+        //    这个 Socket 的地址将作为响应发送给 SOCKS 客户端。
+        let relay_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let relay_addr = relay_socket.local_addr()?;
+        info!("SOCKS: UDP relay listening on {}", relay_addr);
 
-        // Register a new session with the dispatcher
-        let (session_id, mut incoming_from_remote_rx) = self.udp_dispatcher.register();
-        debug!("New UDP session registered with ID: {}", session_id);
+        // 3. 将 relay_socket 的地址作为成功响应发送给 SOCKS 客户端。
+        let response_addr = Socks5Address::from(relay_addr);
+        stream.write_response(&Response::Success(&response_addr)).await?;
 
-        let idle_timeout = Duration::from_secs(120);
-
-        let mut buf = vec![0u8; 65535];
-        let (_len, client_udp_addr) =
-            match tokio::time::timeout(idle_timeout, inbound_udp.recv_from(&mut buf)).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    info!(
-                        "SOCKS UDP association for {} timed out waiting for first packet.",
-                        stream.peer_addr().ip()
-                    );
-                    return Ok(());
-                }
-            };
-
-        info!(
-            "Received first UDP packet from client at {}",
-            client_udp_addr
-        );
-
-        let inbound_udp_clone = Arc::clone(&inbound_udp);
-        let remote_to_client_task = tokio::spawn(async move {
-            while let Some((origin_addr, data)) = incoming_from_remote_rx.recv().await {
-                let Ok(socks_addr) = util::ombrac_addr_to_socks(origin_addr.clone()) else {
-                    continue;
-                };
-
-                let response_packet = SocksUdpPacket::un_frag(socks_addr, data);
-                if let Err(_e) = inbound_udp_clone
-                    .send_to(&response_packet.to_bytes(), client_udp_addr)
-                    .await
-                {
-                    error!(
-                        "Failed to send UDP packet to SOCKS client {}: {}",
-                        client_udp_addr, _e
-                    );
-                    break;
-                }
-
-                info!("OMBRAC client -> socks {}", client_udp_addr);
-            }
-        });
-
-        let client = Arc::clone(&self.client);
-        let client_to_remote_task = tokio::spawn(async move {
-            // Process the first packet that we already received
-            if let Err(_e) = Self::process_client_packet(&client, session_id, &buf[.._len]).await {
-                error!("Error processing first UDP packet: {}", _e);
-                return;
-            }
-
-            // Process subsequent packets
-            loop {
-                match inbound_udp.recv_from(&mut buf).await {
-                    Ok((len, src_addr)) => {
-                        if src_addr != client_udp_addr {
-                            warn!(
-                                "Received UDP packet from unexpected source {}, expected {}. Ignoring.",
-                                src_addr, client_udp_addr
-                            );
-                            continue;
-                        }
-                        if let Err(_e) =
-                            Self::process_client_packet(&client, session_id, &buf[..len]).await
-                        {
-                            error!("Error processing UDP packet from client: {}", _e);
-                            break;
-                        }
-                    }
-                    Err(_e) => {
-                        error!("Error receiving from SOCKS UDP socket: {}", _e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        let mut tcp_check_buf = [0u8; 1];
-        let peer_addr = stream.peer_addr().ip();
-        tokio::select! {
-            _ = stream.read(&mut tcp_check_buf) => {
-                info!("SOCKS TCP control connection for {} closed, ending UDP association.", peer_addr);
-            },
-            _ = remote_to_client_task => {
-                info!("Ombrac->Client UDP task finished for {}.", peer_addr);
-            },
-            _ = client_to_remote_task => {
-                info!("Client->Ombrac UDP task finished for {}.", peer_addr);
-            },
-        }
-
-        self.udp_dispatcher.deregister(session_id);
-        info!("[UDP] Association for {} ended.", peer_addr);
-        Ok(())
+        // 进入转发循环
+        self.udp_relay_loop(stream, relay_socket, udp_session).await
     }
 
-    async fn process_client_packet(
-        client: &Client<T, C>,
-        session_id: u64,
-        raw: &[u8],
+    /// The main relay loop for a UDP association.
+    ///
+    /// This loop concurrently handles two data flows:
+    /// - SOCKS Client -> Relay Socket -> ombrac Tunnel -> Destination
+    /// - Destination -> ombrac Tunnel -> Relay Socket -> SOCKS Client
+    async fn udp_relay_loop(
+        &self,
+        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
+        relay_socket: UdpSocket,
+        mut udp_session: UdpSession<T, C>,
     ) -> io::Result<()> {
-        let pkt = SocksUdpPacket::from_bytes(&mut &raw[..]).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to parse SOCKS UDP packet: {e}"),
-            )
-        })?;
+        let mut client_udp_src: Option<SocketAddr> = None;
+        let mut buf = vec![0u8; 65535]; // Max UDP packet size
 
-        if pkt.frag != 0 {
-            warn!("Dropping fragmented SOCKS5 UDP packet, which is not supported.");
-            return Ok(());
+        loop {
+            tokio::select! {
+                // biased; 优先检查控制连接是否关闭
+                biased;
+
+                // 1. 检查 TCP 控制连接是否已关闭。
+                // 如果是，则关联结束，我们应该退出循环。
+                result = stream.read_u8() => {
+                    match result {
+                        Ok(0) | Err(_) => {
+                            info!("SOCKS: TCP control connection for UDP associate closed. Ending session.");
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
+                // 2. 从 ombrac 隧道接收数据（来自远程目标）
+                Some((data, from_addr)) = udp_session.recv_from() => {
+                    if let Some(dest) = client_udp_src {
+                        debug!("SOCKS: Relaying {} bytes from tunnel (from {}) to SOCKS client {}", data.len(), from_addr, dest);
+                        // 将 ombrac 地址转换为 SOCKS 地址
+                        let socks_from_addr = util::ombrac_addr_to_socks(from_addr)?;
+                        // 创建 SOCKS5 UDP 响应头
+                        let udp_response = UdpPacket::un_frag(socks_from_addr, data);
+                        // 将封装后的数据包发回给 SOCKS 客户端
+                        relay_socket.send_to(&udp_response.to_bytes(), dest).await?;
+                    } else {
+                        // 如果我们还不知道 SOCKS 客户端的 UDP 地址，就丢弃这个包
+                        warn!("SOCKS: Received packet from tunnel before client, discarding.");
+                    }
+                }
+
+                // 3. 从本地 relay_socket 接收数据（来自 SOCKS 客户端）
+                result = relay_socket.recv_from(&mut buf) => {
+                    let (len, src) = result?;
+                    // 第一次收到包时，记录下 SOCKS 客户端的 UDP 源地址
+                    if client_udp_src.is_none() {
+                        client_udp_src = Some(src);
+                        info!("SOCKS: First UDP packet received from client {}", src);
+                    }
+
+                    // 解析 SOCKS5 UDP 请求头
+                    let mut bytes = Bytes::copy_from_slice(&mut buf[..len]);
+                    let udp_request = UdpPacket::from_bytes(&mut bytes)?;
+                    let payload = udp_request.data;
+                    let dest_addr = util::socks_to_ombrac_addr(udp_request.address)?;
+
+                    debug!("SOCKS: Relaying {} bytes from SOCKS client {} to tunnel (for {})", payload.len(), src, dest_addr);
+                    // 将裸数据通过 ombrac 会话发送出去
+                    udp_session.send_to(payload, dest_addr).await?;
+                }
+            }
         }
-
-        let dest_addr = util::socks_to_ombrac_addr(pkt.address)?;
-        client.send_datagram(session_id, dest_addr, pkt.data).await
     }
 }
 
@@ -298,21 +156,31 @@ where
                 match self.handle_connect(address.clone(), stream).await {
                     Ok((up, down)) => {
                         info!(
-                            "{} Connect {}, Send: {}, Recv: {}",
-                            stream.peer_addr().ip(),
+                            "SOCKS: Connect to {} finished. Client: {}, Upstream: {} bytes, Downstream: {} bytes",
                             address,
+                            stream.peer_addr(),
                             up,
                             down
                         );
                     }
                     Err(err) => {
-                        error!("SOCKS connect to {} failed: {}", address, err);
+                        if err.kind() != io::ErrorKind::BrokenPipe && err.kind() != io::ErrorKind::ConnectionReset {
+                            error!("SOCKS: Connect to {} failed: {}", address, err);
+                        }
                         return Err(err);
                     }
                 }
             }
-            Request::Associate(_) => self.handle_associate(stream).await?,
-            _ => {
+            Request::Associate(_) => {
+                if let Err(err) = self.handle_associate(stream).await {
+                     if err.kind() != io::ErrorKind::BrokenPipe && err.kind() != io::ErrorKind::ConnectionReset {
+                        error!("SOCKS: Associate from {} failed: {}", stream.peer_addr(), err);
+                     }
+                    return Err(err);
+                }
+            }
+            Request::Bind(_) => {
+                warn!("SOCKS: BIND command is not supported.");
                 stream.write_response_unsupported().await?;
             }
         }
@@ -320,6 +188,7 @@ where
         Ok(())
     }
 }
+
 
 mod util {
     use ombrac::protocol::Address as OmbracAddress;
