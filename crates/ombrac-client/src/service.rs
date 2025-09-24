@@ -16,7 +16,9 @@ use ombrac_transport::quic::{
 use ombrac_transport::{Connection, Initiator};
 
 use crate::client::Client;
-use crate::config::{ServiceConfig, TlsMode};
+use crate::config::ServiceConfig;
+#[cfg(feature = "transport-quic")]
+use crate::config::TlsMode;
 
 pub trait ServiceBuilder {
     type Initiator: Initiator<Connection = Self::Connection>;
@@ -27,8 +29,10 @@ pub trait ServiceBuilder {
     ) -> impl Future<Output = io::Result<Arc<Client<Self::Initiator, Self::Connection>>>> + Send;
 }
 
+#[cfg(feature = "transport-quic")]
 pub struct QuicServiceBuilder;
 
+#[cfg(feature = "transport-quic")]
 impl ServiceBuilder for QuicServiceBuilder {
     type Initiator = QuicClient;
     type Connection = QuicConnection;

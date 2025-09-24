@@ -2396,9 +2396,14 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 name = "tests-integration"
 version = "0.5.15"
 dependencies = [
+ "bytes",
  "curl",
  "ntest",
+ "ombrac",
+ "ombrac-client",
+ "ombrac-server",
  "ombrac-transport",
+ "rand",
  "tests-support",
  "tokio",
 ]
@@ -2407,6 +2412,8 @@ dependencies = [
 name = "tests-support"
 version = "0.5.15"
 dependencies = [
+ "bytes",
+ "ombrac-transport",
  "rcgen",
  "tokio",
 ]

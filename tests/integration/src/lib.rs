@@ -1,4 +1,5 @@
 // mod quic;
+mod service;
 
 // #[cfg(test)]
 // mod tests {

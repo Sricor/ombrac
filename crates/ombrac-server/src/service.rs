@@ -16,8 +16,11 @@ use ombrac_transport::quic::{
 };
 use ombrac_transport::{Acceptor, Connection};
 
-use crate::config::{ServiceConfig, TlsMode};
+use crate::config::ServiceConfig;
 use crate::server::Server;
+
+#[cfg(feature = "transport-quic")]
+use crate::config::TlsMode;
 
 pub trait ServiceBuilder {
     type Acceptor: Acceptor<Connection = Self::Connection>;
@@ -28,8 +31,10 @@ pub trait ServiceBuilder {
     ) -> impl Future<Output = io::Result<Arc<Server<Self::Acceptor>>>> + Send;
 }
 
+#[cfg(feature = "transport-quic")]
 pub struct QuicServiceBuilder;
 
+#[cfg(feature = "transport-quic")]
 impl ServiceBuilder for QuicServiceBuilder {
     type Acceptor = QuicServer;
     type Connection = QuicConnection;

@@ -104,7 +104,7 @@ where
 impl<T, C> Client<T, C>
 where
     T: Initiator<Connection = C> + Send + Sync + 'static,
-    C: Connection + Send + Sync + 'static,
+    C: Connection,
 {
     pub async fn new(transport: T, secret: Secret, options: Option<Bytes>) -> io::Result<Self> {
         let options = options.unwrap_or_default();
