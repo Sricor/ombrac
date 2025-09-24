@@ -17,7 +17,7 @@ use ombrac_transport::{Acceptor, Connection};
 
 // Conditionally compiled datagram module. All UDP logic is encapsulated here.
 #[cfg(feature = "datagram")]
-use self::datagram::DatagramyContext;
+use self::datagram::DatagraContext;
 
 /// The main server struct, responsible for accepting incoming connections and spawning handlers.
 pub struct Server<T: Acceptor> {
@@ -279,7 +279,7 @@ impl<C: Connection> ConnectionHandler<C> {
     /// Spawns the task responsible for handling all UDP traffic.
     #[cfg(feature = "datagram")]
     fn spawn_udp_handler(&self) -> JoinHandle<io::Result<()>> {
-        let context = DatagramyContext::new(
+        let context = DatagraContext::new(
             Arc::clone(&self.connection),
             self.peer_addr,
             self.cancellation_token.child_token(),
@@ -291,37 +291,35 @@ impl<C: Connection> ConnectionHandler<C> {
 #[cfg(feature = "datagram")]
 mod datagram {
     use std::io;
-    use std::{
-        net::SocketAddr,
-        sync::{
-            Arc,
-            atomic::{AtomicU16, Ordering},
-        },
+    use std::net::SocketAddr;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
     };
+    use std::time::Duration;
 
     use bytes::Bytes;
     use moka::future::Cache;
     use ombrac_macros::{debug, info, warn};
-    use tokio_util::sync::CancellationToken;
-
-    use std::time::Duration;
     use tokio::net::UdpSocket;
+    use tokio::task::AbortHandle;
+    use tokio_util::sync::CancellationToken;
 
     use ombrac::protocol::{Address, UdpPacket};
     use ombrac::reassembly::UdpReassembler;
     use ombrac_transport::Connection;
 
     /// Contains the shared state for a connection's UDP proxy.
-    pub(super) struct DatagramyContext<C: Connection> {
+    pub(super) struct DatagraContext<C: Connection> {
         connection: Arc<C>,
         peer_addr: SocketAddr,
         token: CancellationToken,
-        session_sockets: Cache<u64, Arc<UdpSocket>>,
+        session_sockets: Cache<u64, (Arc<UdpSocket>, AbortHandle)>,
         reassembler: Arc<UdpReassembler>,
         fragment_id_counter: Arc<AtomicU16>,
     }
 
-    impl<C: Connection> DatagramyContext<C> {
+    impl<C: Connection> DatagraContext<C> {
         pub(super) fn new(
             connection: Arc<C>,
             peer_addr: SocketAddr,
@@ -354,7 +352,12 @@ mod datagram {
                         let packet_bytes = match result {
                             Ok(bytes) => bytes,
                             Err(e) => {
-                                warn!("{} Error reading datagram from client: {}. Closing UDP handler.", self.peer_addr, e);
+                                if e.kind() == io::ErrorKind::TimedOut {
+                                    debug!("{} Idle timeout reading datagram from client. Continuing.", self.peer_addr);
+                                    continue;
+                                }
+
+                                warn!("{} Unrecoverable error reading datagram from client: {}. Closing UDP handler.", self.peer_addr, e);
                                 return Err(e);
                             }
                         };
@@ -380,7 +383,7 @@ mod datagram {
             // Process the packet through the reassembler. It returns a full datagram when ready.
             if let Some((session_id, address, data)) = self.reassembler.process(packet).await? {
                 // Get or create the UDP socket for this session.
-                let socket = self.get_or_create_session_socket(session_id).await?;
+                let socket = self.get_or_create_session_socket(session_id, &address).await?;
                 self.forward_to_destination(session_id, socket, address, data)
                     .await;
             }
@@ -397,7 +400,7 @@ mod datagram {
         ) {
             let dest_addr_str = address.to_string();
             let dest_addr = match tokio::net::lookup_host(&dest_addr_str).await {
-                Ok(mut addrs) => addrs.next().unwrap(), // Simplified for clarity
+                Ok(mut addrs) => addrs.next().unwrap(),
                 Err(_) => {
                     warn!(
                         "{} [Session][{}] DNS resolution failed for {}",
@@ -426,16 +429,38 @@ mod datagram {
         async fn get_or_create_session_socket(
             &self,
             session_id: u64,
+            dest_addr: &Address,
         ) -> io::Result<Arc<UdpSocket>> {
-            if let Some(socket) = self.session_sockets.get(&session_id).await {
+            if let Some((socket, _)) = self.session_sockets.get(&session_id).await {
                 return Ok(socket);
             }
 
+            let bind_addr = match dest_addr {
+                Address::SocketV4(_)  => "0.0.0.0:0",
+                Address::SocketV6(_) => "[::]:0",
+                Address::Domain(_, _) => {
+                    match tokio::net::lookup_host(dest_addr.to_string()).await?.next() {
+                        Some(sa) if sa.is_ipv4() => "0.0.0.0:0",
+                        Some(_) => "[::]:0", 
+                        None => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "Domain name could not be resolved",
+                            ))
+                        }
+                    }
+                }
+            };
+
             // Create a new UDP socket bound to a random port.
-            let new_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+            let new_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
+
+            // Spawn a task to handle downstream traffic (from destination back to client).
+            let abort_handle = self.spawn_downstream_task(session_id, Arc::clone(&new_socket));
             self.session_sockets
-                .insert(session_id, Arc::clone(&new_socket))
+                .insert(session_id, (Arc::clone(&new_socket), abort_handle))
                 .await;
+
             info!(
                 "{} [Session][{}] New session, listening on {}",
                 self.peer_addr,
@@ -443,23 +468,22 @@ mod datagram {
                 new_socket.local_addr()?
             );
 
-            // Spawn a task to handle downstream traffic (from destination back to client).
-            self.spawn_downstream_task(session_id, Arc::clone(&new_socket));
-
             Ok(new_socket)
         }
 
         /// Spawns a dedicated task for handling downstream traffic for a single UDP session.
-        fn spawn_downstream_task(&self, session_id: u64, socket: Arc<UdpSocket>) {
+        fn spawn_downstream_task(&self, session_id: u64, socket: Arc<UdpSocket>) -> AbortHandle {
             let conn = Arc::clone(&self.connection);
             let token = self.token.child_token();
             let frag_counter = Arc::clone(&self.fragment_id_counter);
             let peer_addr = self.peer_addr;
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 Self::run_downstream_task(conn, peer_addr, session_id, socket, frag_counter, token)
                     .await;
             });
+
+            handle.abort_handle()
         }
 
         /// Task that reads from a remote UDP socket and forwards data back to the client.

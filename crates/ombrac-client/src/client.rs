@@ -459,7 +459,7 @@ mod udp {
                     }
                 } else {
                     warn!(
-                        "Received datagram for UNKNOWN or CLOSED session: {}",
+                        "[Session] [{}] Received datagram for UNKNOWN or CLOSED",
                         session_id
                     );
                 }
