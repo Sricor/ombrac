@@ -217,7 +217,7 @@ impl<C: Connection> ConnectionHandler<C> {
                         // Spawn a separate task for each TCP stream to avoid blocking the acceptor.
                         tokio::spawn(async move {
                             if let Err(e) = Self::handle_tcp_stream(stream, peer_addr).await {
-                                warn!("{} TCP stream handler error: {}", peer_addr, e);
+                                warn!("{} Stream handler error: {}", peer_addr, e);
                             }
                         });
                     }
@@ -466,19 +466,20 @@ mod datagram {
             // Create a new UDP socket bound to a random port.
             let new_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
 
+            info!(
+                "{} [Session][{}] New session for {}, listening on {}",
+                self.peer_addr,
+                session_id,
+                dest_addr,
+                new_socket.local_addr()?
+            );
+
             // Spawn a task to handle downstream traffic (from destination back to client).
             let abort_handle =
                 self.spawn_downstream_task(session_id, Arc::clone(&new_socket), dest_addr);
             self.session_sockets
                 .insert(session_id, (Arc::clone(&new_socket), abort_handle))
                 .await;
-
-            info!(
-                "{} [Session][{}] New session, listening on {}",
-                self.peer_addr,
-                session_id,
-                new_socket.local_addr()?
-            );
 
             Ok(new_socket)
         }
