@@ -185,9 +185,10 @@ where
         let inbound_udp_clone = Arc::clone(&inbound_udp);
         let remote_to_client_task = tokio::spawn(async move {
             while let Some((origin_addr, data)) = incoming_from_remote_rx.recv().await {
-                let Ok(socks_addr) = util::ombrac_addr_to_socks(origin_addr) else {
+                let Ok(socks_addr) = util::ombrac_addr_to_socks(origin_addr.clone()) else {
                     continue;
                 };
+
                 let response_packet = SocksUdpPacket::un_frag(socks_addr, data);
                 if let Err(_e) = inbound_udp_clone
                     .send_to(&response_packet.to_bytes(), client_udp_addr)
@@ -199,6 +200,8 @@ where
                     );
                     break;
                 }
+
+                info!("OMBRAC client -> socks {}", client_udp_addr);
             }
         });
 

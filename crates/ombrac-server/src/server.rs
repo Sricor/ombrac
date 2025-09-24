@@ -1,5 +1,4 @@
 use std::io;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -10,7 +9,7 @@ use futures::StreamExt;
 use moka::future::Cache;
 use tokio::{
     io::AsyncWriteExt,
-    net::{TcpStream, UdpSocket},
+    net::{TcpStream, UdpSocket}, // 引入 UdpSocket
     sync::broadcast,
     task::JoinHandle,
 };
@@ -23,8 +22,6 @@ use ombrac::{
 };
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
-
-type UdpSessionCache<C> = Cache<u64, Arc<UdpSession<C>>>;
 
 pub struct Server<T: Acceptor> {
     acceptor: Arc<T>,
@@ -54,7 +51,12 @@ impl<T: Acceptor> Server<T> {
                         tokio::spawn(async move {
                             info!("{} Accepted new connection", peer_addr);
                             if let Err(e) = Self::handle_connection(connection, secret, peer_addr).await {
-                                error!("{} Connection handler failed: {}", peer_addr, e);
+                                // Avoid logging "Connection reset by peer" as an error, it's common.
+                                if e.kind() != io::ErrorKind::ConnectionReset {
+                                    error!("{} Connection handler failed: {}", peer_addr, e);
+                                } else {
+                                    info!("{} Connection closed by peer.", peer_addr);
+                                }
                             }
                         });
                     } else if let Err(e) = accepted {
@@ -133,7 +135,7 @@ impl<T: Acceptor> Server<T> {
                     peer_addr, e
                 );
             }
-        };
+        }
 
         Ok(())
     }
@@ -215,181 +217,162 @@ impl<T: Acceptor> Server<T> {
         peer_addr: SocketAddr,
         token: CancellationToken,
     ) -> JoinHandle<io::Result<()>> {
-        tokio::spawn(
-            async move { Self::handle_udp_multiplexing(connection, peer_addr, token).await },
-        )
+        tokio::spawn(async move {
+            Self::handle_udp_proxy(connection, peer_addr, token).await
+        })
     }
 
-    async fn handle_udp_multiplexing(
+    /// Handles all UDP proxying for a single client connection.
+    /// It creates a dedicated UDP socket for each unique session ID.
+    async fn handle_udp_proxy(
         connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
         token: CancellationToken,
     ) -> io::Result<()> {
-        let reassembler = UdpReassembler::default();
-        let sessions: UdpSessionCache<T::Connection> = Cache::builder()
+        // Cache to map a client's session_id to its dedicated remote UDP socket.
+        // Arc<UdpSocket> allows sharing the socket between the upstream and downstream tasks.
+        let session_sockets: Cache<u64, Arc<UdpSocket>> = Cache::builder()
             .time_to_idle(Duration::from_secs(120))
-            .eviction_listener(
-                move |_key, session: Arc<UdpSession<<T as Acceptor>::Connection>>, cause| {
-                    info!(
-                        "UDP session {} for {} evicted due to {:?}, shutting down.",
-                        session.id, peer_addr, cause
-                    );
-                    session.shutdown();
-                },
-            )
+            .eviction_listener(|_key, _val, cause| {
+                debug!("UDP session socket evicted due to: {:?}", cause);
+            })
             .build();
 
+        let reassembler = Arc::new(UdpReassembler::default());
+        let fragment_id_counter = Arc::new(AtomicU16::new(0));
+
+        // Upstream loop: Reads from the client connection, and forwards to the remote destination.
         loop {
             tokio::select! {
                 _ = token.cancelled() => {
-                    debug!("{} UDP multiplexer received cancellation signal.", peer_addr);
-                    return Ok(());
+                    debug!("{} UDP proxy handler shutting down.", peer_addr);
+                    break;
                 }
                 result = connection.read_datagram() => {
-                    let packet_bytes = result?;
+                    let packet_bytes = match result {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            // The main connection has an error, so we should exit.
+                            info!("{} Error reading datagram from client connection: {}. Closing UDP handler.", peer_addr, e);
+                            return Err(e);
+                        }
+                    };
+
                     let packet = match UdpPacket::decode(packet_bytes) {
                         Ok(p) => p,
                         Err(e) => {
-                            warn!("{} Failed to decode UDP packet: {}", peer_addr, e);
+                            warn!("{} Failed to decode UDP packet from client: {}", peer_addr, e);
                             continue;
                         }
                     };
 
                     if let Some((session_id, address, data)) = reassembler.process(packet).await? {
-                        let session = sessions.try_get_with(session_id, async {
-                            UdpSession::new(session_id, Arc::clone(&connection), peer_addr)
-                                .await
-                                .map_err(|e| {
-                                    error!("Failed to create new UDP session {}: {}", session_id, e);
-                                    e
-                                })
-                        }).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                        // Check if a socket for this session already exists.
+                        // If not, create a new one.
+                        let remote_socket = if let Some(socket) = session_sockets.get(&session_id).await {
+                            socket
+                        } else {
+                            // Create a new dedicated UDP socket for this session.
+                            let new_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+                            session_sockets.insert(session_id, Arc::clone(&new_socket)).await;
+                            info!("{} New UDP session {} created, listening on {}", peer_addr, session_id, new_socket.local_addr()?);
 
-                        if let Err(e) = session.send_to_remote(address, data).await {
-                             warn!("{} Failed to send UDP packet for session {}: {}", peer_addr, session_id, e);
+                            // Spawn a dedicated downstream task for this new socket.
+                            // This task will read replies from the remote and send them back to the client.
+                            let downstream_conn = Arc::clone(&connection);
+                            let downstream_sock = Arc::clone(&new_socket);
+                            let downstream_token = token.child_token();
+                            let downstream_frag_counter = Arc::clone(&fragment_id_counter);
+
+                            tokio::spawn(async move {
+                                Self::run_downstream_task(
+                                    downstream_conn,
+                                    peer_addr,
+                                    session_id,
+                                    downstream_sock,
+                                    downstream_frag_counter,
+                                    downstream_token
+                                ).await;
+                                info!("{} UDP downstream task for session {} finished.", peer_addr, session_id);
+                            });
+                            new_socket
+                        };
+
+                        // Resolve domain name if necessary.
+                         let dest_addr = match address {
+                             Address::SocketV4(addr) => SocketAddr::V4(addr),
+                             Address::SocketV6(addr) => SocketAddr::V6(addr),
+                             Address::Domain(_, _) => {
+                                 let addr_str = address.to_string();
+                                 match tokio::net::lookup_host(&addr_str).await?.next() {
+                                     Some(addr) => addr,
+                                     None => {
+                                         warn!("{} UDP: DNS resolution failed for {}", peer_addr, addr_str);
+                                         continue;
+                                     }
+                                 }
+                             }
+                        };
+
+                        // Send the data using the session's dedicated socket.
+                        debug!("{} UDP: Sending {} bytes to {} for session {}", peer_addr, data.len(), dest_addr, session_id);
+                        if let Err(e) = remote_socket.send_to(&data, dest_addr).await {
+                             warn!("{} UDP: Failed to send packet to {}: {}", peer_addr, dest_addr, e);
                         }
                     }
                 }
             }
         }
-    }
-}
-
-/// Represents a single UDP association/session.
-struct UdpSession<C: Connection> {
-    id: u64,
-    socket: Arc<UdpSocket>,
-    token: CancellationToken,
-    _downstream_task: JoinHandle<()>,
-    connection: PhantomData<C>,
-}
-
-impl<C: Connection + 'static> UdpSession<C> {
-    async fn new(id: u64, connection: Arc<C>, peer_addr: SocketAddr) -> io::Result<Arc<Self>> {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-        info!(
-            "{} New UDP session {} bound to {}",
-            peer_addr,
-            id,
-            socket.local_addr()?
-        );
-        let token = CancellationToken::new();
-
-        let downstream_task = tokio::spawn(Self::run_downstream_loop(
-            id,
-            connection,
-            Arc::clone(&socket),
-            token.child_token(),
-            peer_addr,
-        ));
-
-        Ok(Arc::new(Self {
-            id,
-            socket,
-            token,
-            _downstream_task: downstream_task,
-            connection: PhantomData,
-        }))
-    }
-
-    /// Sends a packet from the client to the remote destination.
-    async fn send_to_remote(&self, address: Address, data: Bytes) -> io::Result<()> {
-        let dest_addr = match address {
-            Address::SocketV4(addr) => SocketAddr::V4(addr),
-            Address::SocketV6(addr) => SocketAddr::V6(addr),
-            Address::Domain(_, _) => {
-                let addr_str = address.to_string();
-                tokio::net::lookup_host(addr_str)
-                    .await?
-                    .next()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Domain not found"))?
-            }
-        };
-        self.socket.send_to(&data, dest_addr).await?;
         Ok(())
     }
 
-    /// The loop that reads from the remote and sends back to the client.
-    async fn run_downstream_loop(
-        session_id: u64,
-        connection: Arc<C>,
-        socket: Arc<UdpSocket>,
-        token: CancellationToken,
+    /// A dedicated task that reads from a single UDP socket (for a single session)
+    /// and sends any received data back to the client.
+    async fn run_downstream_task(
+        connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
+        session_id: u64,
+        socket: Arc<UdpSocket>,
+        fragment_id_counter: Arc<AtomicU16>,
+        token: CancellationToken,
     ) {
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
         let mut buf = vec![0u8; 65535];
-        let fragment_id_counter = AtomicU16::new(0);
 
         loop {
             tokio::select! {
-                _ = token.cancelled() => {
-                    debug!("{} Downstream task for session {} cancelled.", peer_addr, session_id);
-                    break;
-                }
+                _ = token.cancelled() => break,
                 result = socket.recv_from(&mut buf) => {
-                    match result {
-                        Ok((len, from_addr)) => {
-                            let data = Bytes::copy_from_slice(&buf[..len]);
-                            let address = Address::from(from_addr);
-
-                            let overhead = 1 + 8 + address.encoded_len(); // type + session_id + addr
-                            if overhead + data.len() <= max_datagram_size {
-                                let packet = UdpPacket::Unfragmented { session_id, address, data };
-                                if let Ok(encoded) = packet.encode() {
-                                    if connection.send_datagram(encoded).await.is_err() {
-                                        break; // Connection is likely dead
-                                    }
-                                }
-                            } else {
-                                let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-                                let fragments = UdpPacket::split_packet(
-                                    session_id,
-                                    address,
-                                    data,
-                                    max_datagram_size,
-                                    fragment_id,
-                                );
-                                for fragment in fragments {
-                                     if let Ok(encoded) = fragment.encode() {
-                                        if connection.send_datagram(encoded).await.is_err() {
-                                            break; // Connection is likely dead
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    let (len, from_addr) = match result {
+                        Ok(r) => r,
                         Err(e) => {
-                            warn!("{} Error receiving on UDP socket for session {}: {}", peer_addr, session_id, e);
+                            warn!("{} UDP: Error receiving from remote socket for session {}: {}", peer_addr, session_id, e);
                             break;
+                        }
+                    };
+
+                    info!("{} UDP: Received {} bytes from {} for session {}", peer_addr, len, from_addr, session_id);
+                    let data = Bytes::copy_from_slice(&buf[..len]);
+                    let address = Address::from(from_addr);
+
+                    // Send back to client, fragmenting if necessary
+                    let overhead = 1 + 8 + address.encoded_len();
+                    if overhead + data.len() <= max_datagram_size {
+                        let packet = UdpPacket::Unfragmented { session_id, address, data };
+                        if let Ok(encoded) = packet.encode() {
+                            if connection.send_datagram(encoded).await.is_err() { break; }
+                        }
+                    } else {
+                        let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
+                        let fragments = UdpPacket::split_packet(session_id, address, data, max_datagram_size, fragment_id);
+                        for fragment in fragments {
+                            if let Ok(encoded) = fragment.encode() {
+                                if connection.send_datagram(encoded).await.is_err() { break; }
+                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    fn shutdown(&self) {
-        self.token.cancel();
     }
 }

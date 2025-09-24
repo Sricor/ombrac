@@ -24,6 +24,7 @@ pub trait Acceptor: Send + Sync + 'static {
 
 pub trait Connection: Send + Sync + 'static {
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + Sync;
+    fn id(&self) -> usize;
     fn remote_address(&self) -> Result<SocketAddr>;
     fn max_datagram_size(&self) -> Option<usize>;
     fn open_bidirectional(&self) -> impl Future<Output = Result<Self::Stream>> + Send;

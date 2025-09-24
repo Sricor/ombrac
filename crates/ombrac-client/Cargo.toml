@@ -82,6 +82,7 @@ http-body-util = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["json"], optional = true }
 tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optional = true }
 dashmap = { workspace = true }
+moka = { workspace = true, features = ["future"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

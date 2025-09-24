@@ -192,4 +192,8 @@ impl crate::Connection for quinn::Connection {
     fn max_datagram_size(&self) -> Option<usize> {
         quinn::Connection::max_datagram_size(self)
     }
+
+    fn id(&self) -> usize {
+        quinn::Connection::stable_id(self)
+    }
 }
