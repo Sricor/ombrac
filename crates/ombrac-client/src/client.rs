@@ -298,7 +298,7 @@ where
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
         // A reasonable guess for payload size, leaving room for headers.
-        let max_payload_size = max_datagram_size.saturating_sub(128);
+        let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
 
         if data.len() <= max_payload_size {
             let unfragmented_packet = UdpPacket::Unfragmented {
@@ -306,7 +306,6 @@ where
                 address: dest_addr,
                 data,
             };
-            // FIXED: Use the implemented UdpPacket::encode method
             let encoded = unfragmented_packet.encode()?;
             debug!(
                 "Client Internals [{}]: Sending UNFRAGMENTED packet ({} bytes) over transport.",

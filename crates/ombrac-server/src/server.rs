@@ -7,7 +7,6 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use moka::future::Cache;
-use ombrac::protocol::{HandshakeError, ServerHandshakeResponse};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpStream, UdpSocket},
@@ -18,8 +17,11 @@ use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use ombrac::{
     codec::{UpstreamMessage, length_codec},
-    protocol::{self, Address, PROTOCOLS_VERSION, Secret, UdpPacket},
-    reassembly::UdpReassembler, // Added missing import
+    protocol::{
+        self, Address, HandshakeError, PROTOCOLS_VERSION, Secret, ServerHandshakeResponse,
+        UdpPacket,
+    },
+    reassembly::UdpReassembler,
 };
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
@@ -257,15 +259,11 @@ impl<T: Acceptor> Server<T> {
         tokio::spawn(async move { Self::handle_udp_proxy(connection, peer_addr, token).await })
     }
 
-    /// Handles all UDP proxying for a single client connection.
-    /// It creates a dedicated UDP socket for each unique session ID.
     async fn handle_udp_proxy(
         connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
         token: CancellationToken,
     ) -> io::Result<()> {
-        // Cache to map a client's session_id to its dedicated remote UDP socket.
-        // Arc<UdpSocket> allows sharing the socket between the upstream and downstream tasks.
         let session_sockets: Cache<u64, Arc<UdpSocket>> = Cache::builder()
             .time_to_idle(Duration::from_secs(120))
             .eviction_listener(|_key, _val, cause| {
@@ -276,7 +274,6 @@ impl<T: Acceptor> Server<T> {
         let reassembler = Arc::new(UdpReassembler::default());
         let fragment_id_counter = Arc::new(AtomicU16::new(0));
 
-        // Upstream loop: Reads from the client connection, and forwards to the remote destination.
         loop {
             tokio::select! {
                 _ = token.cancelled() => {
@@ -298,7 +295,6 @@ impl<T: Acceptor> Server<T> {
                         peer_addr, packet_bytes.len()
                     );
 
-                    // FIXED: Use the implemented UdpPacket::decode method
                     let packet = match UdpPacket::decode(&packet_bytes) {
                         Ok(p) => p,
                         Err(e) => {
@@ -308,13 +304,10 @@ impl<T: Acceptor> Server<T> {
                     };
 
                     if let Some((session_id, address, data)) = reassembler.process(packet).await? {
-                        // Check if a socket for this session already exists.
-                        // If not, create a new one.
                         let remote_socket = if let Some(socket) = session_sockets.get(&session_id).await {
                             debug!("{} UDP Proxy [{}]: Reusing existing UDP socket.", peer_addr, session_id);
                             socket
                         } else {
-                            // Create a new dedicated UDP socket for this session.
                             let new_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
                             session_sockets.insert(session_id, Arc::clone(&new_socket)).await;
                             info!(
@@ -322,8 +315,6 @@ impl<T: Acceptor> Server<T> {
                                 peer_addr, session_id, new_socket.local_addr()?
                             );
 
-                            // Spawn a dedicated downstream task for this new socket.
-                            // This task will read replies from the remote and send them back to the client.
                             let downstream_conn = Arc::clone(&connection);
                             let downstream_sock = Arc::clone(&new_socket);
                             let downstream_token = token.child_token();
@@ -343,8 +334,7 @@ impl<T: Acceptor> Server<T> {
                             new_socket
                         };
 
-                        // Resolve domain name if necessary.
-                         let dest_addr = match address.clone() { // Clone address to avoid move issues
+                         let dest_addr = match address.clone() {
                              Address::SocketV4(addr) => SocketAddr::V4(addr),
                              Address::SocketV6(addr) => SocketAddr::V6(addr),
                              Address::Domain(_, _) => {
@@ -375,8 +365,6 @@ impl<T: Acceptor> Server<T> {
         Ok(())
     }
 
-    /// A dedicated task that reads from a single UDP socket (for a single session)
-    /// and sends any received data back to the client.
     async fn run_downstream_task(
         connection: Arc<T::Connection>,
         peer_addr: SocketAddr,
@@ -388,8 +376,7 @@ impl<T: Acceptor> Server<T> {
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
         let mut buf = vec![0u8; 65535];
 
-        // A reasonable guess for payload size, leaving room for headers.
-        let max_payload_size = max_datagram_size.saturating_sub(128);
+        let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
 
         loop {
             tokio::select! {
@@ -409,10 +396,8 @@ impl<T: Acceptor> Server<T> {
                     let data = Bytes::copy_from_slice(&buf[..len]);
                     let address = Address::from(from_addr);
 
-                    // Send back to client, fragmenting if necessary
                     if data.len() <= max_payload_size {
                         let packet = UdpPacket::Unfragmented { session_id, address, data };
-                        // FIXED: Use the implemented UdpPacket::encode method
                         if let Ok(encoded) = packet.encode() {
                             debug!(
                                 "{} UDP Downstream [{}]: Sending UNFRAGMENTED response ({} bytes) back to client.",
@@ -426,10 +411,8 @@ impl<T: Acceptor> Server<T> {
                             peer_addr, session_id, from_addr, len
                         );
                         let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-                        // FIXED: Use the implemented UdpPacket::split_packet method
                         let fragments = UdpPacket::split_packet(session_id, address, data, max_payload_size, fragment_id);
                         for (i, fragment) in fragments.enumerate() {
-                             // FIXED: Use the implemented UdpPacket::encode method
                             if let Ok(encoded) = fragment.encode() {
                                 debug!(
                                     "{} UDP Downstream [{}]: Sending FRAGMENT #{} (frag_id: {}) of response ({} bytes) back to client.",
