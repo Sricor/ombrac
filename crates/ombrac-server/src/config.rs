@@ -121,6 +121,7 @@ pub struct TransportConfig {
 
     /// Keep-alive interval (in milliseconds) [default: 8000]
     #[clap(long, help_heading = "Transport", value_name = "TIME")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<u64>,
 
     /// Maximum number of bidirectional streams that can be open simultaneously [default: 1000]
