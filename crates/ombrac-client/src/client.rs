@@ -8,7 +8,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use ombrac::codec::length_codec;
-use ombrac::protocol::{HandshakeError, ServerHandshakeResponse};
+use ombrac::protocol::HandshakeError;
 use ombrac::reassembly::UdpReassembler;
 use tokio::{
     io::AsyncWriteExt,
@@ -19,7 +19,7 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use ombrac::{
-    codec::UpstreamMessage,
+    codec::{ServerHandshakeResponse, UpstreamMessage},
     protocol::{self, Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
 };
 use ombrac_macros::{debug, error, info, warn};
@@ -328,7 +328,6 @@ where
             );
 
             let fragment_id = self.fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-            // FIXED: Use the implemented UdpPacket::split_packet method
             let fragments = UdpPacket::split_packet(
                 session_id,
                 dest_addr.clone(),
@@ -337,17 +336,8 @@ where
                 fragment_id,
             );
 
-            for (i, fragment) in fragments.enumerate() {
-                // FIXED: Use the implemented UdpPacket::encode method
+            for fragment in fragments {
                 let packet_bytes = fragment.encode()?;
-                debug!(
-                    "Client Internals [{}]: Sending FRAGMENT #{} (frag_id: {}) ({} bytes) for {}",
-                    session_id,
-                    i,
-                    fragment_id,
-                    packet_bytes.len(),
-                    dest_addr
-                );
                 self.with_retry(|conn| {
                     let data_for_attempt = packet_bytes.clone();
                     async move { conn.send_datagram(data_for_attempt).await }

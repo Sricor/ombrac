@@ -95,12 +95,6 @@ pub enum HandshakeError {
     InternalServerError,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub enum ServerHandshakeResponse {
-    Ok,
-    Err(HandshakeError),
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Address {
     SocketV4(SocketAddrV4),
@@ -213,4 +207,3 @@ macro_rules! impl_message_serde {
 impl_message_serde!(ClientHello);
 impl_message_serde!(UdpPacket);
 impl_message_serde!(Address);
-impl_message_serde!(ServerHandshakeResponse);

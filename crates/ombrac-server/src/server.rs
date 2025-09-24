@@ -16,11 +16,8 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use ombrac::{
-    codec::{UpstreamMessage, length_codec},
-    protocol::{
-        self, Address, HandshakeError, PROTOCOLS_VERSION, Secret, ServerHandshakeResponse,
-        UdpPacket,
-    },
+    codec::{ServerHandshakeResponse, UpstreamMessage, length_codec},
+    protocol::{self, Address, HandshakeError, PROTOCOLS_VERSION, Secret, UdpPacket},
     reassembly::UdpReassembler,
 };
 use ombrac_macros::{debug, error, info, warn};
