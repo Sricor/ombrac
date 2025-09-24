@@ -17,8 +17,11 @@ required-features = ["binary"]
 [features]
 default = [
     "tracing",
+    "datagram",
     "transport-default"
 ]
+
+datagram = []
 
 binary = [
     "dep:figment",

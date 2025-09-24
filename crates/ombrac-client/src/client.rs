@@ -3,7 +3,6 @@ pub use client::Client;
 #[cfg(feature = "datagram")]
 pub use udp::session::UdpSession;
 
-
 mod client {
     use std::future::Future;
     use std::io;
@@ -311,7 +310,7 @@ mod udp {
                 data,
             };
             let encoded = packet.encode()?;
-            debug!( 
+            debug!(
                 "[Session][{}] Sending {} {} bytes",
                 session_id,
                 dest_addr,
@@ -326,7 +325,7 @@ mod udp {
         } else {
             // The packet is too large and must be fragmented.
             warn!(
-                "[Session][{}] Packet for {} is too large ({} > max {}), fragmenting...",
+                "[Session][{}] Sending packet for {} is too large ({} > max {}), fragmenting...",
                 session_id,
                 dest_addr,
                 data.len(),

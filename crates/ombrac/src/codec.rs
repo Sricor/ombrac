@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tokio_util::codec::LengthDelimitedCodec;
+pub use tokio_util::codec::LengthDelimitedCodec;
 
 use crate::protocol::{ClientConnect, ClientHello, HandshakeError};
 
