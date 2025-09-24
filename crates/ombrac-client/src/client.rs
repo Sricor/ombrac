@@ -1,7 +1,7 @@
 pub use client::Client;
 
 #[cfg(feature = "datagram")]
-pub use udp::session::UdpSession;
+pub use datagram::session::UdpSession;
 
 mod client {
     use std::future::Future;
@@ -27,7 +27,7 @@ mod client {
     use ombrac_transport::{Connection, Initiator};
 
     #[cfg(feature = "datagram")]
-    use crate::client::udp::{dispatcher::UdpDispatcher, session::UdpSession};
+    use crate::client::datagram::{dispatcher::UdpDispatcher, session::UdpSession};
 
     /// The central client responsible for managing the connection to the server.
     ///
@@ -265,10 +265,10 @@ mod client {
     }
 }
 
-/// The `udp` module encapsulates all logic related to handling UDP datagrams,
+/// The `datagram` module encapsulates all logic related to handling UDP datagrams,
 /// including session management, packet fragmentation, and reassembly.
 #[cfg(feature = "datagram")]
-mod udp {
+mod datagram {
     use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU16, Ordering};
@@ -301,7 +301,8 @@ mod udp {
         // Use a conservative default MTU if the transport doesn't provide one.
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
         // Leave a reasonable margin for headers.
-        let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
+        let overhead = UdpPacket::fragmented_overhead();
+        let max_payload_size = max_datagram_size.saturating_sub(overhead).max(1);
 
         if data.len() <= max_payload_size {
             let packet = UdpPacket::Unfragmented {
@@ -490,7 +491,7 @@ mod udp {
     /// Represents a virtual UDP session over the tunnel.
     pub mod session {
         use super::*;
-        use crate::client::udp::ClientInner;
+        use crate::client::datagram::ClientInner;
         use tokio::sync::mpsc;
 
         /// A virtual UDP session that provides a socket-like API.

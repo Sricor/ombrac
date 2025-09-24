@@ -57,6 +57,14 @@ pub enum UdpPacket {
 }
 
 impl UdpPacket {
+    pub fn fragmented_overhead() -> usize {
+        // Type + u64 + u16 + u8 + u8
+        let fixed_overhead = 1 + 8 + 2 + 1 + 1; 
+        // 1 byte tag + 2 bytes len + 255 bytes domain + 2 bytes port
+        const MAX_ADDRESS_OVERHEAD: usize = 260; 
+        fixed_overhead + MAX_ADDRESS_OVERHEAD
+    }
+
     pub fn split_packet(
         session_id: u64,
         address: Address,

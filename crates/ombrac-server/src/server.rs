@@ -11,7 +11,7 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use ombrac::codec::{LengthDelimitedCodec, ServerHandshakeResponse, UpstreamMessage, length_codec};
-use ombrac::protocol::{self, HandshakeError, PROTOCOLS_VERSION, Secret};
+use ombrac::protocol::{self, Address, HandshakeError, PROTOCOLS_VERSION, Secret};
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
 
@@ -232,7 +232,7 @@ impl<C: Connection> ConnectionHandler<C> {
         let mut framed = Framed::new(&mut stream, length_codec());
 
         // Read the destination address from the client.
-        let dest_addr = match framed.next().await {
+        let original_dest = match framed.next().await {
             Some(Ok(payload)) => match protocol::decode(&payload)? {
                 UpstreamMessage::Connect(connect) => connect.address,
                 _ => {
@@ -250,13 +250,24 @@ impl<C: Connection> ConnectionHandler<C> {
             }
         };
 
-        info!("{} TCP proxy request to: {}", peer_addr, dest_addr);
+        let dest_addr = match &original_dest {
+            Address::SocketV4(addr) => (*addr).into(),
+            Address::SocketV6(addr) => (*addr).into(),
+            Address::Domain(_, _) => {
+                let domain = original_dest.to_string();
+                match tokio::net::lookup_host(&domain).await?.next() {
+                    Some(addr) => addr,
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("Domain name {domain} could not be resolved"),
+                        ));
+                    }
+                }
+            }
+        };
 
-        let mut dest_stream = TcpStream::connect(dest_addr.to_string()).await?;
-        info!(
-            "{} Successfully connected to destination: {}",
-            peer_addr, dest_addr
-        );
+        let mut dest_stream = TcpStream::connect(dest_addr).await?;
 
         // Forward any data that was already buffered in the framing codec.
         let parts = framed.into_parts();
@@ -266,11 +277,10 @@ impl<C: Connection> ConnectionHandler<C> {
         }
 
         // Copy data in both directions until one side closes.
-        let (up, down) =
-            ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
+        let _copy = ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await?;
         info!(
-            "{} TCP proxy to {} finished. Upstream: {} bytes, Downstream: {} bytes",
-            peer_addr, dest_addr, up, down
+            "{} Connect {}, Send: {}, Recv: {}",
+            peer_addr, original_dest, _copy.0, _copy.1
         );
 
         Ok(())
@@ -331,8 +341,8 @@ mod datagram {
                 token,
                 session_sockets: Cache::builder()
                     .time_to_idle(Duration::from_secs(120))
-                    .eviction_listener(|_key, _val, cause| {
-                        debug!("Session UDP socket evicted due to: {:?}", cause);
+                    .eviction_listener(|_key, _val, _cause| {
+                        debug!("Session UDP socket evicted due to: {:?}", _cause);
                     })
                     .build(),
                 reassembler: Arc::new(UdpReassembler::default()),
@@ -383,7 +393,9 @@ mod datagram {
             // Process the packet through the reassembler. It returns a full datagram when ready.
             if let Some((session_id, address, data)) = self.reassembler.process(packet).await? {
                 // Get or create the UDP socket for this session.
-                let socket = self.get_or_create_session_socket(session_id, &address).await?;
+                let socket = self
+                    .get_or_create_session_socket(session_id, address.clone())
+                    .await?;
                 self.forward_to_destination(session_id, socket, address, data)
                     .await;
             }
@@ -429,24 +441,24 @@ mod datagram {
         async fn get_or_create_session_socket(
             &self,
             session_id: u64,
-            dest_addr: &Address,
+            dest_addr: Address,
         ) -> io::Result<Arc<UdpSocket>> {
             if let Some((socket, _)) = self.session_sockets.get(&session_id).await {
                 return Ok(socket);
             }
 
             let bind_addr = match dest_addr {
-                Address::SocketV4(_)  => "0.0.0.0:0",
+                Address::SocketV4(_) => "0.0.0.0:0",
                 Address::SocketV6(_) => "[::]:0",
                 Address::Domain(_, _) => {
                     match tokio::net::lookup_host(dest_addr.to_string()).await?.next() {
                         Some(sa) if sa.is_ipv4() => "0.0.0.0:0",
-                        Some(_) => "[::]:0", 
+                        Some(_) => "[::]:0",
                         None => {
                             return Err(io::Error::new(
                                 io::ErrorKind::NotFound,
                                 "Domain name could not be resolved",
-                            ))
+                            ));
                         }
                     }
                 }
@@ -456,7 +468,8 @@ mod datagram {
             let new_socket = Arc::new(UdpSocket::bind(bind_addr).await?);
 
             // Spawn a task to handle downstream traffic (from destination back to client).
-            let abort_handle = self.spawn_downstream_task(session_id, Arc::clone(&new_socket));
+            let abort_handle =
+                self.spawn_downstream_task(session_id, Arc::clone(&new_socket), dest_addr);
             self.session_sockets
                 .insert(session_id, (Arc::clone(&new_socket), abort_handle))
                 .await;
@@ -472,15 +485,28 @@ mod datagram {
         }
 
         /// Spawns a dedicated task for handling downstream traffic for a single UDP session.
-        fn spawn_downstream_task(&self, session_id: u64, socket: Arc<UdpSocket>) -> AbortHandle {
+        fn spawn_downstream_task(
+            &self,
+            session_id: u64,
+            socket: Arc<UdpSocket>,
+            original_dest: Address,
+        ) -> AbortHandle {
             let conn = Arc::clone(&self.connection);
             let token = self.token.child_token();
             let frag_counter = Arc::clone(&self.fragment_id_counter);
             let peer_addr = self.peer_addr;
 
             let handle = tokio::spawn(async move {
-                Self::run_downstream_task(conn, peer_addr, session_id, socket, frag_counter, token)
-                    .await;
+                Self::run_downstream_task(
+                    conn,
+                    peer_addr,
+                    session_id,
+                    socket,
+                    frag_counter,
+                    token,
+                    original_dest,
+                )
+                .await;
             });
 
             handle.abort_handle()
@@ -494,9 +520,11 @@ mod datagram {
             socket: Arc<UdpSocket>,
             fragment_id_counter: Arc<AtomicU16>,
             token: CancellationToken,
+            original_dest: Address,
         ) {
             let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
-            let max_payload_size = max_datagram_size.saturating_sub(128).max(1);
+            let overhead = UdpPacket::fragmented_overhead();
+            let max_payload_size = max_datagram_size.saturating_sub(overhead).max(1);
             let mut buf = vec![0u8; 65535];
 
             loop {
@@ -515,8 +543,8 @@ mod datagram {
                             peer_addr, session_id, from_addr, len
                         );
 
+                        let address = original_dest.clone();
                         let data = Bytes::copy_from_slice(&buf[..len]);
-                        let address = Address::from(from_addr);
 
                         // This packet might need to be fragmented before sending back to client.
                         if data.len() <= max_payload_size {
