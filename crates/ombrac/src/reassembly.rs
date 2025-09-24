@@ -11,12 +11,17 @@ use crate::protocol::{Address, UdpPacket};
 const DEFAULT_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_MAX_CONCURRENT_REASSEMBLIES: u64 = 8192;
 
+// The key for the cache is a combination of the session and fragment IDs
+// to ensure fragments from different sessions don't collide.
+type CacheKey = (u64, u16);
+type SessionID = u64;
+
 struct ReassemblyBuffer {
     fragments: Vec<Option<Bytes>>,
     received_count: u8,
     total_count: u8,
     address: Address,
-    session_id: u64,
+    session_id: SessionID,
 }
 
 impl ReassemblyBuffer {
@@ -63,13 +68,8 @@ impl ReassemblyBuffer {
         self.received_count > 0 && self.received_count == self.total_count
     }
 
-    fn assemble_and_take(&mut self) -> (u64, Address, Bytes) {
-        let total_len = self
-            .fragments
-            .iter()
-            .map(|f| f.as_ref().map_or(0, |b| b.len()))
-            .sum();
-        let mut combined = BytesMut::with_capacity(total_len);
+    fn assemble_and_take(&mut self) -> (SessionID, Address, Bytes) {
+        let mut combined = BytesMut::new(); 
 
         for fragment in self.fragments.iter_mut() {
             if let Some(data) = fragment.take() {
@@ -79,10 +79,6 @@ impl ReassemblyBuffer {
         (self.session_id, self.address.clone(), combined.freeze())
     }
 }
-
-// The key for the cache is a combination of the session and fragment IDs
-// to ensure fragments from different sessions don't collide.
-type CacheKey = (u64, u16);
 
 pub struct UdpReassembler {
     cache: Cache<CacheKey, Arc<Mutex<ReassemblyBuffer>>>,
