@@ -325,7 +325,7 @@ mod datagram {
                 .await?;
         } else {
             // The packet is too large and must be fragmented.
-            warn!(
+            debug!(
                 "[Session][{}] Sending packet for {} is too large ({} > max {}), fragmenting...",
                 session_id,
                 dest_addr,
@@ -460,7 +460,7 @@ mod datagram {
                     }
                 } else {
                     warn!(
-                        "[Session] [{}] Received datagram for UNKNOWN or CLOSED",
+                        "[Session][{}] Received datagram for UNKNOWN or CLOSED",
                         session_id
                     );
                 }

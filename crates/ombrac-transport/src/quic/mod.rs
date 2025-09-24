@@ -140,8 +140,10 @@ impl From<ConnectionError> for io::Error {
             ConnectionError::QuinnConnection(error) => {
                 use quinn::ConnectionError::*;
                 let kind = match error {
-                    LocallyClosed | ConnectionClosed(_) | ApplicationClosed(_) | Reset
-                    | TimedOut => io::ErrorKind::ConnectionReset,
+                    LocallyClosed | ConnectionClosed(_) | ApplicationClosed(_) | Reset => {
+                        io::ErrorKind::ConnectionReset
+                    }
+                    TimedOut => io::ErrorKind::TimedOut,
                     _ => io::ErrorKind::Other,
                 };
                 io::Error::new(kind, error)

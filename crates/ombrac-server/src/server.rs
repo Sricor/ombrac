@@ -213,7 +213,6 @@ impl<C: Connection> ConnectionHandler<C> {
                     _ = token.cancelled() => return Ok(()),
                     result = connection.accept_bidirectional() => {
                         let stream = result?;
-                        info!("{} Accepted new bidirectional stream for TCP", peer_addr);
 
                         // Spawn a separate task for each TCP stream to avoid blocking the acceptor.
                         tokio::spawn(async move {
@@ -531,38 +530,37 @@ mod datagram {
                 tokio::select! {
                     _ = token.cancelled() => break,
                     result = socket.recv_from(&mut buf) => {
-                        let (len, from_addr) = match result {
+                        let (len, _from_addr) = match result {
                             Ok(r) => r,
                             Err(e) => {
                                 warn!("{} [Session][{}] Error receiving from remote socket: {}", peer_addr, session_id, e);
                                 break;
                             }
                         };
-                        debug!(
-                            "{} [Session][{}] Receive {} {} bytes",
-                            peer_addr, session_id, from_addr, len
-                        );
 
                         let address = original_dest.clone();
                         let data = Bytes::copy_from_slice(&buf[..len]);
 
+                        debug!(
+                            "{} [Session][{}] Receive {} {} bytes",
+                            peer_addr, session_id, address, len
+                        );
+
                         // This packet might need to be fragmented before sending back to client.
                         if data.len() <= max_payload_size {
                             let packet = UdpPacket::Unfragmented { session_id, address, data };
-                            if let Ok(encoded) = packet.encode() {
-                                if connection.send_datagram(encoded).await.is_err() { break; }
-                            }
+                            if let Ok(encoded) = packet.encode()
+                                && connection.send_datagram(encoded).await.is_err() { break; }
                         } else {
-                            warn!(
+                            debug!(
                                 "{} [Session][{}] Sending packet for {} is too large ({} > max {}), fragmenting...",
-                                peer_addr, session_id, from_addr, len, max_payload_size
+                                peer_addr, session_id, address, len, max_payload_size
                             );
                             let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
                             let fragments = UdpPacket::split_packet(session_id, address, data, max_payload_size, fragment_id);
                             for fragment in fragments {
-                                if let Ok(encoded) = fragment.encode() {
-                                    if connection.send_datagram(encoded).await.is_err() { break; }
-                                }
+                                if let Ok(encoded) = fragment.encode()
+                                    && connection.send_datagram(encoded).await.is_err() { break; }
                             }
                         }
                     }
