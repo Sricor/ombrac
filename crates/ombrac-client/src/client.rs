@@ -3,8 +3,7 @@ pub use client::Client;
 #[cfg(feature = "datagram")]
 pub use udp::session::UdpSession;
 
-/// The `client` module contains the primary `Client` struct and its core logic
-/// for managing the server connection and handling TCP streams.
+
 mod client {
     use std::future::Future;
     use std::io;
@@ -278,7 +277,7 @@ mod udp {
     use bytes::Bytes;
     use ombrac::protocol::{Address, UdpPacket};
     use ombrac::reassembly::UdpReassembler;
-    use ombrac_macros::{debug, info, warn};
+    use ombrac_macros::{debug, warn};
     use ombrac_transport::{Connection, Initiator};
 
     use super::client::ClientInner;
@@ -313,7 +312,7 @@ mod udp {
             };
             let encoded = packet.encode()?;
             debug!( 
-                "[Session][{}] Send packet to {} ({} bytes)",
+                "[Session][{}] Sending {} {} bytes",
                 session_id,
                 dest_addr,
                 encoded.len()
@@ -376,7 +375,7 @@ mod udp {
             match reassembler.process(packet).await {
                 Ok(Some((session_id, address, data))) => {
                     debug!(
-                        "[Session][{}] Recv packet from {} ({} bytes)",
+                        "[Session][{}] Receive {} {} bytes",
                         session_id,
                         address,
                         data.len()
@@ -384,11 +383,10 @@ mod udp {
                     return Ok((session_id, address, data));
                 }
                 Ok(None) => {
-                    debug!("[Session][{}] Received a fragment, waiting for more parts.");
                     continue; // Fragment received, continue reading.
                 }
                 Err(_e) => {
-                    warn!("[Session][{}] Reassembly error: {}. Discarding fragment.", _e);
+                    warn!("Reassembly error: {}. Discarding fragment.", _e);
                     continue; // Reassembly error, wait for the next valid packet.
                 }
             }
@@ -427,14 +425,12 @@ mod udp {
                 T: Initiator<Connection = C>,
                 C: Connection,
             {
-                info!("[UdpDispatcher] Task started.");
                 let mut reassembler = UdpReassembler::default();
 
                 loop {
                     tokio::select! {
                         // Listen for the shutdown signal.
                         _ = inner.shutdown_token.cancelled() => {
-                            info!("[UdpDispatcher] Shutting down.");
                             break;
                         }
                         // Read the next datagram from the server.
@@ -444,7 +440,7 @@ mod udp {
                                     inner.udp_dispatcher.dispatch(session_id, data, address).await;
                                 }
                                 Err(_e) => {
-                                     warn!("[UdpDispatcher] Error reading datagram: {}. Retrying after delay...", _e);
+                                    warn!("Error reading datagram: {}. Retrying after delay...", _e);
                                      // A small delay to prevent a tight loop on persistent errors.
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 }
@@ -457,25 +453,14 @@ mod udp {
             /// Forwards a received datagram to the appropriate session.
             async fn dispatch(&self, session_id: u64, data: Bytes, address: Address) {
                 if let Some(tx) = self.dispatch_map.get(&session_id) {
-                    debug!(
-                        "[UdpDispatcher] Forwarding {} bytes from {} to session [{}].",
-                        data.len(),
-                        address,
-                        session_id
-                    );
-
                     // If sending fails, the receiver (`UdpSession`) has been dropped.
                     // It's safe to clean up the entry from the map.
                     if tx.send((data, address)).await.is_err() {
                         self.dispatch_map.remove(&session_id);
-                        debug!(
-                            "[UdpDispatcher] Cleaned up dropped session [{}].",
-                            session_id
-                        );
                     }
                 } else {
                     warn!(
-                        "[UdpDispatcher] Received datagram for UNKNOWN or CLOSED session: {}",
+                        "Received datagram for UNKNOWN or CLOSED session: {}",
                         session_id
                     );
                 }
@@ -572,7 +557,6 @@ mod udp {
                 self.client_inner
                     .udp_dispatcher
                     .unregister_session(self.session_id);
-                debug!("[UdpSession][{}] Dropped and cleaned up.", self.session_id);
             }
         }
     }
