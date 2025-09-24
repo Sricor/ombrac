@@ -19,6 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = [
+    "datagram",
     "endpoint-default",
     "transport-default",
 ]
@@ -31,6 +32,10 @@ binary = [
     "endpoint-tun"
 ]
 
+datagram = [
+    "dep:dashmap"
+]
+
 tracing = [
     "dep:tracing",
     "dep:tracing-appender",
@@ -38,7 +43,6 @@ tracing = [
     "ombrac-netstack/tracing",
     "ombrac-transport/tracing"
 ]
-
 endpoint-default = ["endpoint-socks"]
 endpoint-socks = ["socks-lib"]
 endpoint-tun = [
@@ -82,8 +86,7 @@ hyper-util = { workspace = true, features = ["tokio"], optional = true }
 http-body-util = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["json"], optional = true }
 tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optional = true }
-dashmap = { workspace = true }
-moka = { workspace = true, features = ["future"] }
+dashmap = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

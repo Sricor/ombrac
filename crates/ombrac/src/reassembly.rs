@@ -69,7 +69,7 @@ impl ReassemblyBuffer {
     }
 
     fn assemble_and_take(&mut self) -> (SessionID, Address, Bytes) {
-        let mut combined = BytesMut::new(); 
+        let mut combined = BytesMut::new();
 
         for fragment in self.fragments.iter_mut() {
             if let Some(data) = fragment.take() {

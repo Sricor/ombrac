@@ -3,9 +3,8 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    use bytes::Bytes;
     use tests_support::mock_transport::{MockConnection, MockInitiator, mock_transport_pair};
-    use tokio::{net::UdpSocket, sync::broadcast};
+    use tokio::sync::broadcast;
 
     use ombrac::protocol::{Address, Secret};
     use ombrac_client::client::Client;
@@ -54,15 +53,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "datagram")]
     async fn test_udp_proxy_unfragmented() -> io::Result<()> {
         let (client, _shutdown_tx, _) = setup_test_env().await;
 
-        let echo_server = UdpSocket::bind("127.0.0.1:0").await?;
+        let echo_server = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
         let echo_addr = echo_server.local_addr()?;
 
-        let mut udp_session = client.connect_udp();
+        let mut udp_session = client.open_associate();
 
-        let message = Bytes::from_static(b"hello world");
+        let message = bytes::Bytes::from_static(b"hello world");
         let dest_addr: Address = echo_addr.to_string().try_into().unwrap();
         udp_session.send_to(message.clone(), dest_addr).await?;
 
@@ -79,19 +79,20 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "datagram")]
     async fn test_udp_proxy_fragmented() -> io::Result<()> {
         let (client, _shutdown_tx, _) = setup_test_env().await;
 
-        let echo_server = UdpSocket::bind("127.0.0.1:0").await?;
+        let echo_server = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
         let echo_addr = echo_server.local_addr()?;
 
-        let mut udp_session = client.connect_udp();
+        let mut udp_session = client.open_associate();
 
         let mut large_message = Vec::with_capacity(250);
         for i in 0..250 {
             large_message.push(i as u8);
         }
-        let large_message = Bytes::from(large_message);
+        let large_message = bytes::Bytes::from(large_message);
 
         let dest_addr: Address = echo_addr.to_string().try_into().unwrap();
         udp_session

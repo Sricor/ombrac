@@ -1571,7 +1571,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "ipnet",
- "moka",
  "ombrac",
  "ombrac-macros",
  "ombrac-netstack",

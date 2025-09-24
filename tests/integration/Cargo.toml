@@ -12,6 +12,7 @@ readme = "../../README.md"
 
 [features]
 datagram = [
+    "ombrac-client/datagram",
     "ombrac-transport/datagram"
 ]
 
