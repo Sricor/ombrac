@@ -1,6 +1,9 @@
+use std::io;
+use std::sync::Arc;
+use std::time::Duration;
+
 use bytes::{BufMut, Bytes, BytesMut};
 use moka::future::Cache;
-use std::{io, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 use crate::protocol::{Address, UdpPacket};

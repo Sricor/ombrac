@@ -1,5 +1,3 @@
-// client.rs
-
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -10,22 +8,18 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use ombrac::reassembly::UdpReassembler;
 use tokio::{
-    io::AsyncWriteExt, // Added AsyncReadExt for read_u32
+    io::AsyncWriteExt,
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
 use ombrac::{
+    codec::UpstreamMessage,
     protocol::{self, Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
-    upstream::UpstreamMessage,
 };
 use ombrac_macros::{debug, info, warn};
 use ombrac_transport::{Connection, Initiator};
-
-// This type alias was missing but seems implied by other code.
-// If your transport library provides this, you can remove this.
-mod config {}
 
 type UdpDispatcher = mpsc::Sender<(Bytes, Address)>;
 
@@ -109,7 +103,7 @@ where
 
 impl<T, C> Client<T, C>
 where
-    T: Initiator<Connection = C> + Send + Sync + 'static,
+    T: Initiator<Connection = C>,
     C: Connection,
 {
     pub async fn new(transport: T, secret: Secret, options: Option<Bytes>) -> io::Result<Self> {
@@ -349,7 +343,7 @@ where
             );
 
             // FIXED: Use the implemented UdpPacket::decode method
-            let packet = match UdpPacket::decode(packet_bytes) {
+            let packet = match UdpPacket::decode(&packet_bytes) {
                 Ok(packet) => packet,
                 Err(e) => {
                     warn!("Failed to decode UDP packet: {}", e);

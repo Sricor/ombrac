@@ -1548,12 +1548,8 @@ version = "0.5.15"
 dependencies = [
  "bincode",
  "bytes",
- "dashmap",
- "futures",
  "moka",
- "ombrac-transport",
  "serde",
- "serde_bytes",
  "tokio",
  "tokio-util",
 ]
@@ -2225,16 +2221,6 @@ checksum = "fd6c24dee235d0da097043389623fb913daddf92c76e9f5a1db88607a0bcbd1d"
 dependencies = [
  "serde_core",
  "serde_derive",
-]
-
-[[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
 ]
 
 [[package]]

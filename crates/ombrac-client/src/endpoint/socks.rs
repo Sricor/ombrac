@@ -127,7 +127,7 @@ where
                     }
 
                     // 解析 SOCKS5 UDP 请求头
-                    let mut bytes = Bytes::copy_from_slice(&mut buf[..len]);
+                    let mut bytes = Bytes::copy_from_slice(&buf[..len]);
                     let udp_request = UdpPacket::from_bytes(&mut bytes)?;
                     let payload = udp_request.data;
                     let dest_addr = util::socks_to_ombrac_addr(udp_request.address)?;

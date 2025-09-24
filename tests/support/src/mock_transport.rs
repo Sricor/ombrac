@@ -181,14 +181,12 @@ impl Acceptor for MockAcceptor {
         Ok(self.local_addr)
     }
 
-    fn accept(&self) -> impl Future<Output = io::Result<Self::Connection>> + Send {
-        async move {
-            let mut guard = self.connection_rx.lock().await;
-            guard
-                .recv()
-                .await
-                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Acceptor channel closed"))
-        }
+    async fn accept(&self) -> io::Result<Self::Connection> {
+        let mut guard = self.connection_rx.lock().await;
+        guard
+            .recv()
+            .await
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Acceptor channel closed"))
     }
 }
 

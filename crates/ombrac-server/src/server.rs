@@ -16,9 +16,9 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use ombrac::{
+    codec::{UpstreamMessage, length_codec},
     protocol::{self, Address, PROTOCOLS_VERSION, Secret, UdpPacket},
     reassembly::UdpReassembler, // Added missing import
-    upstream::{UpstreamMessage, new_codec},
 };
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
@@ -78,7 +78,7 @@ impl<T: Acceptor> Server<T> {
     ) -> io::Result<()> {
         let mut control_stream = connection.accept_bidirectional().await?;
 
-        let mut framed_control = Framed::new(&mut control_stream, new_codec());
+        let mut framed_control = Framed::new(&mut control_stream, length_codec());
 
         match framed_control.next().await {
             Some(Ok(payload)) => {
@@ -187,7 +187,7 @@ impl<T: Acceptor> Server<T> {
         mut stream: <T::Connection as Connection>::Stream,
         peer_addr: SocketAddr,
     ) -> io::Result<()> {
-        let mut framed = Framed::new(&mut stream, new_codec());
+        let mut framed = Framed::new(&mut stream, length_codec());
 
         let dest_addr = match framed.next().await {
             Some(Ok(payload)) => {
@@ -289,7 +289,7 @@ impl<T: Acceptor> Server<T> {
                     );
 
                     // FIXED: Use the implemented UdpPacket::decode method
-                    let packet = match UdpPacket::decode(packet_bytes) {
+                    let packet = match UdpPacket::decode(&packet_bytes) {
                         Ok(p) => p,
                         Err(e) => {
                             warn!("{} Failed to decode UDP packet from client: {}", peer_addr, e);

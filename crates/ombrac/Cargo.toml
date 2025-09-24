@@ -13,20 +13,12 @@ readme = "../../README.md"
 default = []
 
 [dependencies]
-ombrac-transport = { workspace = true }
-
-serde = { workspace = true, features = ["derive"] }
-serde_bytes = { workspace = true, features = ["std"] }
-bincode = { workspace = true, features = ["alloc", "serde"] }
 bytes = { workspace = true }
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["codec"] }
+serde = { workspace = true, features = ["derive"] }
+bincode = { workspace = true, features = ["alloc", "serde"] }
 moka = { workspace = true, features = ["future"] }
-dashmap = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-futures = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true
