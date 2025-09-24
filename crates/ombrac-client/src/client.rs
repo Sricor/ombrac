@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use tokio::{
     io::AsyncWriteExt,
-    sync::{mpsc, Mutex},
+    sync::{Mutex, mpsc},
     task::JoinHandle,
 };
 use tokio_util::{codec::Encoder, sync::CancellationToken};
@@ -180,13 +180,21 @@ where
                         Ok((session_id, address, data)) => {
                             // Find the corresponding session sender in the map
                             if let Some(tx) = inner.udp_dispatch_map.get(&session_id) {
+                                debug!(
+                                    "UDP Dispatcher: Forwarding {} bytes from {} to session [{}].",
+                                    data.len(), address, session_id
+                                );
+
                                 // Send the data to the session. If it fails, the receiver
                                 // (UdpSession) has been dropped, so we can clean up.
                                 if tx.send((data, address)).await.is_err() {
                                     inner.udp_dispatch_map.remove(&session_id);
                                 }
                             } else {
-                                warn!("Received UDP datagram for unknown or closed session: {}", session_id);
+                                warn!(
+                                    "UDP Dispatcher: Received UDP datagram for UNKNOWN or CLOSED session: {}",
+                                    session_id
+                                );
                             }
                         }
                         Err(e) => {
@@ -260,6 +268,12 @@ where
                 data,
             };
             let encoded = unfragmented_packet.encode()?;
+            debug!(
+                "Client Internals [{}]: Sending UNFRAGMENTED packet ({} bytes) over transport.",
+                session_id,
+                encoded.len()
+            );
+
             self.with_retry(|conn| {
                 let data_for_attempt = encoded.clone();
                 async move { conn.send_datagram(data_for_attempt).await }
@@ -267,16 +281,29 @@ where
             .await?;
         } else {
             warn!(
-                "UDP packet for {} is too large (predicted size {} > max {}), splitting...",
-                dest_addr, predicted_len, max_datagram_size
+                "Client Internals [{}]: Packet for {} is too large (size {} > max {}), splitting...",
+                session_id, dest_addr, predicted_len, max_datagram_size
             );
 
             let fragment_id = self.fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-            let fragments =
-                UdpPacket::split_packet(session_id, dest_addr, data, max_datagram_size, fragment_id);
+            let fragments = UdpPacket::split_packet(
+                session_id,
+                dest_addr.clone(),
+                data,
+                max_datagram_size,
+                fragment_id,
+            );
 
-            for fragment in fragments {
+            for (i, fragment) in fragments.enumerate() {
                 let packet_bytes = fragment.encode()?;
+                debug!(
+                    "Client Internals [{}]: Sending FRAGMENT #{} (frag_id: {}) ({} bytes) for {}",
+                    session_id,
+                    i,
+                    fragment_id,
+                    packet_bytes.len(),
+                    dest_addr
+                );
                 self.with_retry(|conn| {
                     let data_for_attempt = packet_bytes.clone();
                     async move { conn.send_datagram(data_for_attempt).await }
@@ -294,6 +321,11 @@ where
                 .with_retry(|conn| async move { conn.read_datagram().await })
                 .await?;
 
+            debug!(
+                "Client Internals: Received {} bytes from transport.",
+                packet_bytes.len()
+            );
+
             let packet = match UdpPacket::decode(packet_bytes) {
                 Ok(packet) => packet,
                 Err(e) => {
@@ -304,9 +336,18 @@ where
 
             match self.reassembler.process(packet).await {
                 Ok(Some((session_id, address, data))) => {
+                    info!(
+                        "Client Internals [{}]: Successfully reassembled packet from {}. Total size: {} bytes.",
+                        session_id,
+                        address,
+                        data.len()
+                    );
                     return Ok((session_id, address, data));
                 }
-                Ok(None) => continue, // Fragment received, continue reading.
+                Ok(None) => {
+                    debug!("Client Internals: Received a fragment, waiting for more parts.");
+                    continue;
+                } // Fragment received, continue reading.
                 Err(e) => {
                     warn!("UDP reassembly error: {}", e);
                     continue;
@@ -322,7 +363,8 @@ where
         if current_conn_id == old_conn_id {
             info!("Connection is stale, performing reconnection.");
             let new_connection =
-                Client::<T, C>::client_hello(&self.transport, self.secret, self.options.clone()).await?;
+                Client::<T, C>::client_hello(&self.transport, self.secret, self.options.clone())
+                    .await?;
             self.connection.store(Arc::new(new_connection));
             info!("Reconnection successful.");
         } else {

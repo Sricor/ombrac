@@ -5,9 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use socks_lib::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use socks_lib::v5::server::Handler;
-use socks_lib::v5::{
-    Address as Socks5Address, Request, Response, Stream, UdpPacket
-};
+use socks_lib::v5::{Address as Socks5Address, Request, Response, Stream, UdpPacket};
 use tokio::net::UdpSocket;
 
 use ombrac_macros::{debug, error, info, warn};
@@ -56,12 +54,17 @@ where
         // 2. 在本地创建一个 UDP Socket，用于接收来自 SOCKS 客户端的数据。
         //    这个 Socket 的地址将作为响应发送给 SOCKS 客户端。
         let relay_socket = UdpSocket::bind("0.0.0.0:0").await?;
-        let relay_addr = relay_socket.local_addr()?;
+        let relay_addr = SocketAddr::new(
+            stream.local_addr().ip(),
+            relay_socket.local_addr().unwrap().port(),
+        );
         info!("SOCKS: UDP relay listening on {}", relay_addr);
 
         // 3. 将 relay_socket 的地址作为成功响应发送给 SOCKS 客户端。
         let response_addr = Socks5Address::from(relay_addr);
-        stream.write_response(&Response::Success(&response_addr)).await?;
+        stream
+            .write_response(&Response::Success(&response_addr))
+            .await?;
 
         // 进入转发循环
         self.udp_relay_loop(stream, relay_socket, udp_session).await
@@ -164,7 +167,9 @@ where
                         );
                     }
                     Err(err) => {
-                        if err.kind() != io::ErrorKind::BrokenPipe && err.kind() != io::ErrorKind::ConnectionReset {
+                        if err.kind() != io::ErrorKind::BrokenPipe
+                            && err.kind() != io::ErrorKind::ConnectionReset
+                        {
                             error!("SOCKS: Connect to {} failed: {}", address, err);
                         }
                         return Err(err);
@@ -173,9 +178,15 @@ where
             }
             Request::Associate(_) => {
                 if let Err(err) = self.handle_associate(stream).await {
-                     if err.kind() != io::ErrorKind::BrokenPipe && err.kind() != io::ErrorKind::ConnectionReset {
-                        error!("SOCKS: Associate from {} failed: {}", stream.peer_addr(), err);
-                     }
+                    if err.kind() != io::ErrorKind::BrokenPipe
+                        && err.kind() != io::ErrorKind::ConnectionReset
+                    {
+                        error!(
+                            "SOCKS: Associate from {} failed: {}",
+                            stream.peer_addr(),
+                            err
+                        );
+                    }
                     return Err(err);
                 }
             }
@@ -188,7 +199,6 @@ where
         Ok(())
     }
 }
-
 
 mod util {
     use ombrac::protocol::Address as OmbracAddress;

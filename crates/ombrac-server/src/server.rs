@@ -217,9 +217,7 @@ impl<T: Acceptor> Server<T> {
         peer_addr: SocketAddr,
         token: CancellationToken,
     ) -> JoinHandle<io::Result<()>> {
-        tokio::spawn(async move {
-            Self::handle_udp_proxy(connection, peer_addr, token).await
-        })
+        tokio::spawn(async move { Self::handle_udp_proxy(connection, peer_addr, token).await })
     }
 
     /// Handles all UDP proxying for a single client connection.
@@ -258,6 +256,11 @@ impl<T: Acceptor> Server<T> {
                         }
                     };
 
+                    debug!(
+                        "{} UDP Proxy: Received {} bytes from client connection.",
+                        peer_addr, packet_bytes.len()
+                    );
+
                     let packet = match UdpPacket::decode(packet_bytes) {
                         Ok(p) => p,
                         Err(e) => {
@@ -270,12 +273,16 @@ impl<T: Acceptor> Server<T> {
                         // Check if a socket for this session already exists.
                         // If not, create a new one.
                         let remote_socket = if let Some(socket) = session_sockets.get(&session_id).await {
+                            debug!("{} UDP Proxy [{}]: Reusing existing UDP socket.", peer_addr, session_id);
                             socket
                         } else {
                             // Create a new dedicated UDP socket for this session.
                             let new_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
                             session_sockets.insert(session_id, Arc::clone(&new_socket)).await;
-                            info!("{} New UDP session {} created, listening on {}", peer_addr, session_id, new_socket.local_addr()?);
+                            info!(
+                                "{} UDP Proxy [{}]: NEW UDP session created, listening on {}",
+                                peer_addr, session_id, new_socket.local_addr()?
+                            );
 
                             // Spawn a dedicated downstream task for this new socket.
                             // This task will read replies from the remote and send them back to the client.
@@ -314,11 +321,16 @@ impl<T: Acceptor> Server<T> {
                              }
                         };
 
-                        // Send the data using the session's dedicated socket.
-                        debug!("{} UDP: Sending {} bytes to {} for session {}", peer_addr, data.len(), dest_addr, session_id);
+                        debug!(
+                            "{} UDP Proxy [{}]: Forwarding {} bytes to destination {}",
+                            peer_addr, session_id, data.len(), dest_addr
+                        );
                         if let Err(e) = remote_socket.send_to(&data, dest_addr).await {
                              warn!("{} UDP: Failed to send packet to {}: {}", peer_addr, dest_addr, e);
                         }
+                    } else {
+                         // ==> 在这里添加日志 <==
+                        debug!("{} UDP Proxy: Received a fragment, waiting for more parts.", peer_addr);
                     }
                 }
             }
@@ -350,8 +362,10 @@ impl<T: Acceptor> Server<T> {
                             break;
                         }
                     };
-
-                    info!("{} UDP: Received {} bytes from {} for session {}", peer_addr, len, from_addr, session_id);
+                    info!(
+                        "{} UDP Downstream [{}]: Received {} bytes from remote {}",
+                        peer_addr, session_id, len, from_addr
+                    );
                     let data = Bytes::copy_from_slice(&buf[..len]);
                     let address = Address::from(from_addr);
 
@@ -360,13 +374,25 @@ impl<T: Acceptor> Server<T> {
                     if overhead + data.len() <= max_datagram_size {
                         let packet = UdpPacket::Unfragmented { session_id, address, data };
                         if let Ok(encoded) = packet.encode() {
+                            debug!(
+                                "{} UDP Downstream [{}]: Sending UNFRAGMENTED response ({} bytes) back to client.",
+                                peer_addr, session_id, encoded.len()
+                            );
                             if connection.send_datagram(encoded).await.is_err() { break; }
                         }
                     } else {
+                        warn!(
+                            "{} UDP Downstream [{}]: Response packet from {} is too large ({} bytes), splitting...",
+                            peer_addr, session_id, from_addr, len
+                        );
                         let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
                         let fragments = UdpPacket::split_packet(session_id, address, data, max_datagram_size, fragment_id);
-                        for fragment in fragments {
+                        for (i, fragment) in fragments.enumerate() {
                             if let Ok(encoded) = fragment.encode() {
+                                debug!(
+                                    "{} UDP Downstream [{}]: Sending FRAGMENT #{} (frag_id: {}) of response ({} bytes) back to client.",
+                                    peer_addr, session_id, i, fragment_id, encoded.len()
+                                );
                                 if connection.send_datagram(encoded).await.is_err() { break; }
                             }
                         }
