@@ -15,6 +15,9 @@ default = []
 [dependencies]
 ombrac-transport = { workspace = true }
 
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true, features = ["std"] }
+bincode = { workspace = true, features = ["alloc", "serde"] }
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true, features = ["codec"] }

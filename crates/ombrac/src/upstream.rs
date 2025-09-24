@@ -1,256 +1,28 @@
-use std::io::Cursor;
+use serde::{Deserialize, Serialize};
+use tokio_util::codec::LengthDelimitedCodec;
 
-use bytes::{Buf, BufMut, BytesMut};
-pub use tokio_util::codec::{Decoder, Encoder};
+use crate::protocol::{ClientConnect, ClientHello};
 
-use crate::protocol::{Address, ClientConnect, ClientHello};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 顶层枚举，用于在控制流上传输的所有消息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpstreamMessage {
     Hello(ClientHello),
     Connect(ClientConnect),
 }
 
-const MSG_TYPE_HELLO: u8 = 0x01;
-const MSG_TYPE_CONNECT: u8 = 0x02;
-
-pub struct ProtocolCodec;
-
-impl Decoder for ProtocolCodec {
-    type Item = UpstreamMessage;
-    type Error = std::io::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.is_empty() {
-            return Ok(None);
-        }
-
-        let mut cursor = Cursor::new(&src[..]);
-        let msg_type = cursor.get_u8();
-
-        match msg_type {
-            MSG_TYPE_HELLO => {
-                if cursor.remaining() < ClientHello::FIXED_HEADER_LEN - 1 {
-                    // -1 because msg_type is already read
-                    return Ok(None);
-                }
-
-                let version = cursor.get_u8();
-                let mut secret = [0u8; 32];
-                cursor.copy_to_slice(&mut secret);
-                let options_len = cursor.get_u8() as usize;
-
-                let header_len = cursor.position() as usize;
-                let total_len = header_len + options_len;
-
-                if src.len() < total_len {
-                    return Ok(None);
-                }
-
-                src.advance(header_len);
-                let options = src.split_to(options_len).freeze();
-
-                Ok(Some(UpstreamMessage::Hello(ClientHello {
-                    version,
-                    secret,
-                    options,
-                })))
-            }
-            MSG_TYPE_CONNECT => {
-                let addr_result = Address::read_from(&mut cursor);
-
-                match addr_result {
-                    Ok(address) => {
-                        let total_len = cursor.position() as usize;
-                        src.advance(total_len);
-                        Ok(Some(UpstreamMessage::Connect(ClientConnect { address })))
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-                    Err(e) => Err(e),
-                }
-            }
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid message type",
-            )),
-        }
-    }
-}
-
-impl Encoder<UpstreamMessage> for ProtocolCodec {
-    type Error = std::io::Error;
-
-    fn encode(&mut self, item: UpstreamMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        match item {
-            UpstreamMessage::Hello(hello) => {
-                dst.put_u8(MSG_TYPE_HELLO);
-                hello.encode(dst)?;
-            }
-            UpstreamMessage::Connect(connect) => {
-                dst.reserve(1 + connect.address.encoded_len());
-                dst.put_u8(MSG_TYPE_CONNECT);
-                connect.address.write_to(dst)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::{SocketAddrV4, SocketAddrV6};
-
-    use crate::protocol::PROTOCOLS_VERSION;
-    use bytes::Bytes;
-
-    use super::*;
-
-    #[test]
-    fn test_hello_roundtrip() {
-        let mut codec = ProtocolCodec;
-        let options_data = Bytes::from_static(b"some_options_here");
-        let message = UpstreamMessage::Hello(ClientHello {
-            version: PROTOCOLS_VERSION,
-            secret: [255; 32],
-            options: options_data.clone(),
-        });
-
-        let mut buf = BytesMut::new();
-        codec.encode(message.clone(), &mut buf).unwrap();
-
-        // 1 (type) + 1 (ver) + 32 (secret) + 1 (opts_len) + N (opts)
-        assert_eq!(buf.len(), 1 + 1 + 32 + 1 + options_data.len());
-        // Message Type
-        assert_eq!(buf[0], MSG_TYPE_HELLO);
-        // Options Length
-        assert_eq!(buf[34], options_data.len() as u8);
-
-        let decoded_message = codec.decode(&mut buf).unwrap().unwrap();
-
-        assert_eq!(message, decoded_message);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn test_connect_ipv4_roundtrip() {
-        let mut codec = ProtocolCodec;
-        let addr = "192.168.1.1:8080".parse::<SocketAddrV4>().unwrap();
-        let message = UpstreamMessage::Connect(ClientConnect {
-            address: Address::SocketV4(addr),
-        });
-
-        let mut buf = BytesMut::new();
-        codec.encode(message.clone(), &mut buf).unwrap();
-
-        // 1 (type) + 1 (addr_type) + 4 (ip) + 2 (port)
-        assert_eq!(buf.len(), 8);
-
-        let decoded_message = codec.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(message, decoded_message);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn test_connect_domain_roundtrip() {
-        let mut codec = ProtocolCodec;
-        let domain = Bytes::from_static(b"example.com");
-        let port = 443;
-        let message = UpstreamMessage::Connect(ClientConnect {
-            address: Address::Domain(domain.clone(), port),
-        });
-
-        let mut buf = BytesMut::new();
-        codec.encode(message.clone(), &mut buf).unwrap();
-
-        // 1 (type) + 1 (addr_type) + 1 (domain_len) + N (domain) + 2 (port)
-        assert_eq!(buf.len(), 1 + 1 + 1 + domain.len() + 2);
-
-        let decoded_message = codec.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(message, decoded_message);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn test_decode_waits_for_full_header_and_body() {
-        let mut codec = ProtocolCodec;
-        let options_data = Bytes::from_static(b"12345");
-        let message = UpstreamMessage::Hello(ClientHello {
-            version: 1,
-            secret: [1; 32],
-            options: options_data.clone(),
-        });
-
-        let mut buf = BytesMut::new();
-        codec.encode(message, &mut buf).unwrap();
-        // Total length = 1 (type) + 34 (header) + 5 (options) = 40
-
-        // Split buffer to simulate partial reads
-        let mut part1 = buf.split_to(10);
-        assert!(
-            codec.decode(&mut part1).unwrap().is_none(),
-            "Should be None with only 10 bytes"
-        );
-
-        let part2 = buf.split_to(25); // 10 + 25 = 35 bytes now, still not enough for body
-        part1.unsplit(part2);
-        assert_eq!(part1.len(), 35);
-        assert!(
-            codec.decode(&mut part1).unwrap().is_none(),
-            "Should be None with full header but no body"
-        );
-
-        part1.unsplit(buf); // Add remaining 5 bytes
-        assert_eq!(part1.len(), 40);
-        let decoded = codec.decode(&mut part1).unwrap();
-        assert!(
-            decoded.is_some(),
-            "Should decode successfully with full message"
-        );
-        assert!(
-            part1.is_empty(),
-            "Buffer should be empty after successful decode"
-        );
-    }
-
-    #[test]
-    fn test_encode_error_on_long_options() {
-        let mut codec = ProtocolCodec;
-        let long_options = Bytes::from(vec![0; 256]); // 256 > u8::MAX
-        let message = UpstreamMessage::Hello(ClientHello {
-            version: 1,
-            secret: [1; 32],
-            options: long_options,
-        });
-
-        let mut buf = BytesMut::new();
-        let result = codec.encode(message, &mut buf);
-        assert!(matches!(result, Err(e) if e.kind() == std::io::ErrorKind::InvalidInput));
-    }
-
-    #[test]
-    fn test_connect_ipv6_roundtrip() {
-        let mut codec = ProtocolCodec;
-        let addr = "[::1]:8080".parse::<SocketAddrV6>().unwrap();
-        let message = UpstreamMessage::Connect(ClientConnect {
-            address: Address::SocketV6(addr),
-        });
-
-        let mut buf = BytesMut::new();
-        codec.encode(message.clone(), &mut buf).unwrap();
-
-        // 1 (type) + 1 (addr_type) + 16 (ip) + 2 (port)
-        assert_eq!(buf.len(), 20);
-
-        let decoded_message = codec.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(message, decoded_message);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn test_decode_invalid_message_type() {
-        let mut codec = ProtocolCodec;
-        let mut buf = BytesMut::from(&[0xFFu8, 0x01u8, 0x02u8, 0x03u8] as &[u8]);
-        let result = codec.decode(&mut buf);
-        assert!(matches!(result, Err(e) if e.kind() == std::io::ErrorKind::InvalidData));
-    }
+/// 创建一个为我们的协议预先配置好的、基于长度分隔的编解码器。
+///
+/// 我们的协议使用一个4字节（u32）的大端序（Big-Endian）长度前缀。
+pub fn new_codec() -> LengthDelimitedCodec {
+    LengthDelimitedCodec::builder()
+        .length_field_offset(0) // 长度字段位于帧的起始位置。
+        .length_field_length(4) // 长度字段本身为4字节。
+        .length_adjustment(0) // 负载紧跟在长度字段之后。
+        // **修正点**: 将 num_skip 设置为长度字段的长度（4字节）。
+        // 这可以确保编解码器返回的缓冲区只包含消息负载，而不包含长度前缀本身，
+        // 这正是 bincode 解码器所期望的。
+        .num_skip(4)
+        // 设置一个合理的最大帧长度以防止DoS攻击。
+        .max_frame_length(8 * 1024 * 1024) // 8 MiB
+        .new_codec()
 }

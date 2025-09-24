@@ -66,6 +66,7 @@ futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 figment = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
+bincode = { workspace = true }
 blake3 = { workspace = true }
 arc-swap = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "signal", "sync"] }

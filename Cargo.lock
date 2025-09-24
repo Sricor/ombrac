@@ -225,6 +225,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "serde",
+ "unty",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1536,11 +1546,14 @@ dependencies = [
 name = "ombrac"
 version = "0.5.15"
 dependencies = [
+ "bincode",
  "bytes",
  "dashmap",
  "futures",
  "moka",
  "ombrac-transport",
+ "serde",
+ "serde_bytes",
  "tokio",
  "tokio-util",
 ]
@@ -1550,6 +1563,7 @@ name = "ombrac-client"
 version = "0.5.15"
 dependencies = [
  "arc-swap",
+ "bincode",
  "blake3",
  "bytes",
  "clap",
@@ -1599,6 +1613,7 @@ dependencies = [
 name = "ombrac-server"
 version = "0.5.15"
 dependencies = [
+ "bincode",
  "blake3",
  "bytes",
  "clap",
@@ -2213,6 +2228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.225"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2694,6 +2719,12 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "utf8parse"

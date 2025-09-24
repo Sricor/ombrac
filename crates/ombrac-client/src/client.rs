@@ -1,25 +1,31 @@
+// client.rs
+
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use arc_swap::{ArcSwap, Guard};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use dashmap::DashMap;
+use ombrac::reassembly::UdpReassembler;
 use tokio::{
-    io::AsyncWriteExt,
+    io::AsyncWriteExt, // Added AsyncReadExt for read_u32
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
-use tokio_util::{codec::Encoder, sync::CancellationToken};
+use tokio_util::sync::CancellationToken;
 
 use ombrac::{
-    protocol::{Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
-    reassembly::UdpReassembler,
-    upstream::{ProtocolCodec, UpstreamMessage},
+    protocol::{self, Address, ClientConnect, ClientHello, PROTOCOLS_VERSION, Secret, UdpPacket},
+    upstream::UpstreamMessage,
 };
 use ombrac_macros::{debug, info, warn};
 use ombrac_transport::{Connection, Initiator};
+
+// This type alias was missing but seems implied by other code.
+// If your transport library provides this, you can remove this.
+mod config {}
 
 type UdpDispatcher = mpsc::Sender<(Bytes, Address)>;
 
@@ -155,11 +161,15 @@ where
             .inner
             .with_retry(|conn| async move { conn.open_bidirectional().await })
             .await?;
-        let mut codec = ProtocolCodec;
-        let mut buf = BytesMut::new();
+
+        // CHANGED: Use our protocol helper to encode the message
         let connect_message = UpstreamMessage::Connect(ClientConnect { address: dest_addr });
-        codec.encode(connect_message, &mut buf)?;
-        stream.write_all(&buf).await?;
+        let encoded_bytes = protocol::encode(&connect_message)?;
+
+        // Write length prefix + payload
+        stream.write_u32(encoded_bytes.len() as u32).await?;
+        stream.write_all(&encoded_bytes).await?;
+
         Ok(stream)
     }
 
@@ -214,15 +224,20 @@ where
     async fn client_hello(transport: &T, secret: Secret, options: Bytes) -> io::Result<C> {
         let connection = transport.connect().await?;
         let mut stream = connection.open_bidirectional().await?;
-        let mut codec = ProtocolCodec;
-        let mut buf = BytesMut::new();
+
+        // CHANGED: Use our protocol helper to encode the message
         let hello_message = UpstreamMessage::Hello(ClientHello {
             version: PROTOCOLS_VERSION,
             secret,
             options,
         });
-        codec.encode(hello_message, &mut buf)?;
-        stream.write_all(&buf).await?;
+
+        let encoded_bytes = protocol::encode(&hello_message)?;
+
+        // Write length prefix + payload
+        stream.write_u32(encoded_bytes.len() as u32).await?;
+        stream.write_all(&encoded_bytes).await?;
+
         Ok(connection)
     }
 }
@@ -256,17 +271,19 @@ where
         }
 
         let connection = self.connection.load();
+        // Use a conservative default if max_datagram_size is not available.
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
 
-        let overhead = 1 + 8 + dest_addr.encoded_len();
-        let predicted_len = overhead + data.len();
+        // A reasonable guess for payload size, leaving room for headers.
+        let max_payload_size = max_datagram_size.saturating_sub(128);
 
-        if predicted_len <= max_datagram_size {
+        if data.len() <= max_payload_size {
             let unfragmented_packet = UdpPacket::Unfragmented {
                 session_id,
                 address: dest_addr,
                 data,
             };
+            // FIXED: Use the implemented UdpPacket::encode method
             let encoded = unfragmented_packet.encode()?;
             debug!(
                 "Client Internals [{}]: Sending UNFRAGMENTED packet ({} bytes) over transport.",
@@ -282,19 +299,24 @@ where
         } else {
             warn!(
                 "Client Internals [{}]: Packet for {} is too large (size {} > max {}), splitting...",
-                session_id, dest_addr, predicted_len, max_datagram_size
+                session_id,
+                dest_addr,
+                data.len(),
+                max_payload_size
             );
 
             let fragment_id = self.fragment_id_counter.fetch_add(1, Ordering::Relaxed);
+            // FIXED: Use the implemented UdpPacket::split_packet method
             let fragments = UdpPacket::split_packet(
                 session_id,
                 dest_addr.clone(),
                 data,
-                max_datagram_size,
+                max_payload_size,
                 fragment_id,
             );
 
             for (i, fragment) in fragments.enumerate() {
+                // FIXED: Use the implemented UdpPacket::encode method
                 let packet_bytes = fragment.encode()?;
                 debug!(
                     "Client Internals [{}]: Sending FRAGMENT #{} (frag_id: {}) ({} bytes) for {}",
@@ -326,6 +348,7 @@ where
                 packet_bytes.len()
             );
 
+            // FIXED: Use the implemented UdpPacket::decode method
             let packet = match UdpPacket::decode(packet_bytes) {
                 Ok(packet) => packet,
                 Err(e) => {

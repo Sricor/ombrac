@@ -9,16 +9,16 @@ use futures::StreamExt;
 use moka::future::Cache;
 use tokio::{
     io::AsyncWriteExt,
-    net::{TcpStream, UdpSocket}, // 引入 UdpSocket
+    net::{TcpStream, UdpSocket},
     sync::broadcast,
     task::JoinHandle,
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use ombrac::{
-    protocol::{Address, PROTOCOLS_VERSION, Secret, UdpPacket},
-    reassembly::UdpReassembler,
-    upstream::{ProtocolCodec, UpstreamMessage},
+    protocol::{self, Address, PROTOCOLS_VERSION, Secret, UdpPacket},
+    reassembly::UdpReassembler, // Added missing import
+    upstream::{UpstreamMessage, new_codec},
 };
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
@@ -52,7 +52,7 @@ impl<T: Acceptor> Server<T> {
                             info!("{} Accepted new connection", peer_addr);
                             if let Err(e) = Self::handle_connection(connection, secret, peer_addr).await {
                                 // Avoid logging "Connection reset by peer" as an error, it's common.
-                                if e.kind() != io::ErrorKind::ConnectionReset {
+                                if e.kind() != io::ErrorKind::ConnectionReset && e.kind() != io::ErrorKind::BrokenPipe {
                                     error!("{} Connection handler failed: {}", peer_addr, e);
                                 } else {
                                     info!("{} Connection closed by peer.", peer_addr);
@@ -77,23 +77,40 @@ impl<T: Acceptor> Server<T> {
         peer_addr: SocketAddr,
     ) -> io::Result<()> {
         let mut control_stream = connection.accept_bidirectional().await?;
-        let mut framed_control = Framed::new(&mut control_stream, ProtocolCodec);
+
+        let mut framed_control = Framed::new(&mut control_stream, new_codec());
 
         match framed_control.next().await {
-            Some(Ok(UpstreamMessage::Hello(hello))) => {
-                if hello.version != PROTOCOLS_VERSION {
-                    let err = "Unsupported protocol version";
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, err));
+            Some(Ok(payload)) => {
+                // FIXED: Use our protocol helper to decode the message correctly
+                let hello_message: UpstreamMessage = protocol::decode(&payload)?;
+
+                if let UpstreamMessage::Hello(hello) = hello_message {
+                    if hello.version != PROTOCOLS_VERSION {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Unsupported protocol version",
+                        ));
+                    }
+                    if hello.secret != secret {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Invalid secret",
+                        ));
+                    }
+                    debug!("{} Client handshake successful", peer_addr);
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected Hello message",
+                    ));
                 }
-                if hello.secret != secret {
-                    let err = "Invalid secret";
-                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, err));
-                }
-                debug!("{} Client handshake successful", peer_addr);
             }
             _ => {
-                let err = "Expected Hello message";
-                return Err(io::Error::new(io::ErrorKind::InvalidData, err));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Failed to read Hello message",
+                ));
             }
         }
 
@@ -170,10 +187,20 @@ impl<T: Acceptor> Server<T> {
         mut stream: <T::Connection as Connection>::Stream,
         peer_addr: SocketAddr,
     ) -> io::Result<()> {
-        let mut framed = Framed::new(&mut stream, ProtocolCodec);
+        let mut framed = Framed::new(&mut stream, new_codec());
 
         let dest_addr = match framed.next().await {
-            Some(Ok(UpstreamMessage::Connect(connect))) => connect.address,
+            Some(Ok(payload)) => {
+                let message: UpstreamMessage = protocol::decode(&payload)?;
+                if let UpstreamMessage::Connect(connect) = message {
+                    connect.address
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected Connect message, got something else",
+                    ));
+                }
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -261,6 +288,7 @@ impl<T: Acceptor> Server<T> {
                         peer_addr, packet_bytes.len()
                     );
 
+                    // FIXED: Use the implemented UdpPacket::decode method
                     let packet = match UdpPacket::decode(packet_bytes) {
                         Ok(p) => p,
                         Err(e) => {
@@ -306,7 +334,7 @@ impl<T: Acceptor> Server<T> {
                         };
 
                         // Resolve domain name if necessary.
-                         let dest_addr = match address {
+                         let dest_addr = match address.clone() { // Clone address to avoid move issues
                              Address::SocketV4(addr) => SocketAddr::V4(addr),
                              Address::SocketV6(addr) => SocketAddr::V6(addr),
                              Address::Domain(_, _) => {
@@ -329,7 +357,6 @@ impl<T: Acceptor> Server<T> {
                              warn!("{} UDP: Failed to send packet to {}: {}", peer_addr, dest_addr, e);
                         }
                     } else {
-                         // ==> 在这里添加日志 <==
                         debug!("{} UDP Proxy: Received a fragment, waiting for more parts.", peer_addr);
                     }
                 }
@@ -351,6 +378,9 @@ impl<T: Acceptor> Server<T> {
         let max_datagram_size = connection.max_datagram_size().unwrap_or(1350);
         let mut buf = vec![0u8; 65535];
 
+        // A reasonable guess for payload size, leaving room for headers.
+        let max_payload_size = max_datagram_size.saturating_sub(128);
+
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
@@ -370,9 +400,9 @@ impl<T: Acceptor> Server<T> {
                     let address = Address::from(from_addr);
 
                     // Send back to client, fragmenting if necessary
-                    let overhead = 1 + 8 + address.encoded_len();
-                    if overhead + data.len() <= max_datagram_size {
+                    if data.len() <= max_payload_size {
                         let packet = UdpPacket::Unfragmented { session_id, address, data };
+                        // FIXED: Use the implemented UdpPacket::encode method
                         if let Ok(encoded) = packet.encode() {
                             debug!(
                                 "{} UDP Downstream [{}]: Sending UNFRAGMENTED response ({} bytes) back to client.",
@@ -386,8 +416,10 @@ impl<T: Acceptor> Server<T> {
                             peer_addr, session_id, from_addr, len
                         );
                         let fragment_id = fragment_id_counter.fetch_add(1, Ordering::Relaxed);
-                        let fragments = UdpPacket::split_packet(session_id, address, data, max_datagram_size, fragment_id);
+                        // FIXED: Use the implemented UdpPacket::split_packet method
+                        let fragments = UdpPacket::split_packet(session_id, address, data, max_payload_size, fragment_id);
                         for (i, fragment) in fragments.enumerate() {
+                             // FIXED: Use the implemented UdpPacket::encode method
                             if let Ok(encoded) = fragment.encode() {
                                 debug!(
                                     "{} UDP Downstream [{}]: Sending FRAGMENT #{} (frag_id: {}) of response ({} bytes) back to client.",
