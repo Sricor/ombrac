@@ -100,14 +100,14 @@ where
             );
         }
 
-        // #[cfg(feature = "endpoint-tun")]
-        // if let Some(config) = &config.endpoint.tun {
-        //     if config.tun_ipv4.is_some() || config.tun_ipv6.is_some() {
-        //         let handle =
-        //             start_tun_device(client, secret, config, shutdown_tx.subscribe()).await?;
-        //         handles.push(handle);
-        //     }
-        // }
+        #[cfg(feature = "endpoint-tun")]
+        if let Some(tun_config) = &config.endpoint.tun {
+            if tun_config.tun_ipv4.is_some() || tun_config.tun_ipv6.is_some() {
+                let handle =
+                    Self::spawn_tun_accpet_loop(config, client, shutdown_tx.subscribe()).await?;
+                handles.push(handle);
+            }
+        }
 
         Ok(Service {
             handles,
@@ -178,6 +178,73 @@ where
             .expect("SOCKS server failed to run");
         })
     }
+
+    #[cfg(feature = "endpoint-tun")]
+    async fn spawn_tun_accpet_loop(
+        config: Arc<ServiceConfig>,
+        ombrac: Arc<Client<T, C>>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> io::Result<JoinHandle<()>> {
+        use crate::endpoint::tun::Tun;
+        // use crate::endpoint::tun::fakedns::FakeDns;
+        use ipnet::{Ipv4Net, Ipv6Net};
+        use std::str::FromStr;
+
+        // let fakedns = {
+        //     let dns_pool = Ipv4Net::from_str(
+        //         config
+        //             .dns_pool
+        //             .clone()
+        //             .unwrap_or("198.18.0.0/16".to_string())
+        //             .as_str(),
+        //     )
+        //     .unwrap();
+        //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
+        // };
+
+        let device = {
+            let mut builder = tun_rs::DeviceBuilder::new();
+            builder = builder.mtu(
+                config
+                    .endpoint
+                    .tun
+                    .as_ref()
+                    .unwrap()
+                    .tun_mtu
+                    .unwrap_or(1500),
+            );
+            if let Some(ip_str) = &config.endpoint.tun.as_ref().unwrap().tun_ipv4 {
+                let ip = Ipv4Net::from_str(&ip_str).unwrap();
+                builder = builder.ipv4(ip.addr(), ip.netmask(), None);
+            }
+            if let Some(ip_str) = &config.endpoint.tun.as_ref().unwrap().tun_ipv6 {
+                let ip = Ipv6Net::from_str(&ip_str).unwrap();
+                builder = builder.ipv6(ip.addr(), ip.netmask());
+            }
+            builder.build_async()?
+        };
+
+        info!(
+            "Starting TUN endpoint, Name: {}, MTU: {}, IP: {:?}",
+            device.name()?,
+            device.mtu()?,
+            device.addresses()?
+        );
+
+        let fd = device.into_fd()?;
+        let tun = Tun::new(ombrac);
+        let handle = tokio::spawn(async move {
+            let shutdown_signal = async {
+                let _ = shutdown_rx.recv().await;
+            };
+
+            tun.run(fd, shutdown_signal)
+                .await
+                .expect("TUN device failed to run");
+        });
+
+        Ok(handle)
+    }
 }
 
 #[cfg(feature = "tracing")]
@@ -213,65 +280,6 @@ fn setup_logging(config: &crate::config::LoggingConfig) {
     std::mem::forget(guard);
     subscriber.with_writer(non_blocking).init();
 }
-
-// #[cfg(feature = "endpoint-tun")]
-// async fn start_tun_device<T, C>(
-//     ombrac: Arc<Client<T, C>>,
-//     config: &TunConfig,
-//     mut shutdown_rx: broadcast::Receiver<()>,
-// ) -> io::Result<JoinHandle<()>> {
-//     use crate::endpoint::tun::Tun;
-//     // use crate::endpoint::tun::fakedns::FakeDns;
-//     use ipnet::{Ipv4Net, Ipv6Net};
-//     use std::str::FromStr;
-
-//     // let fakedns = {
-//     //     let dns_pool = Ipv4Net::from_str(
-//     //         config
-//     //             .dns_pool
-//     //             .clone()
-//     //             .unwrap_or("198.18.0.0/16".to_string())
-//     //             .as_str(),
-//     //     )
-//     //     .unwrap();
-//     //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
-//     // };
-
-//     let device = {
-//         let mut builder = tun_rs::DeviceBuilder::new();
-//         builder = builder.mtu(config.tun_mtu.unwrap_or(1500));
-//         if let Some(ip_str) = &config.tun_ipv4 {
-//             let ip = Ipv4Net::from_str(&ip_str).unwrap();
-//             builder = builder.ipv4(ip.addr(), ip.netmask(), None);
-//         }
-//         if let Some(ip_str) = &config.tun_ipv6 {
-//             let ip = Ipv6Net::from_str(&ip_str).unwrap();
-//             builder = builder.ipv6(ip.addr(), ip.netmask());
-//         }
-//         builder.build_async()?
-//     };
-
-//     info!(
-//         "Starting TUN endpoint, Name: {}, MTU: {}, IP: {:?}",
-//         device.name()?,
-//         device.mtu()?,
-//         device.addresses()?
-//     );
-
-//     let fd = device.into_fd()?;
-//     let tun = Tun::new(client, secret);
-//     let handle = tokio::spawn(async move {
-//         let shutdown_signal = async {
-//             let _ = shutdown_rx.recv().await;
-//         };
-
-//         tun.run(fd, shutdown_signal)
-//             .await
-//             .expect("TUN device failed to run");
-//     });
-
-//     Ok(handle)
-// }
 
 #[cfg(feature = "transport-quic")]
 async fn quic_client_from_config(config: &ServiceConfig) -> io::Result<QuicClient> {

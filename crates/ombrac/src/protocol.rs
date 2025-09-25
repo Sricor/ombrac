@@ -110,6 +110,31 @@ pub enum Address {
     Domain(#[serde(with = "serde_bytes")] Bytes, u16),
 }
 
+impl Address {
+    pub async fn to_socket_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::SocketV4(addr) => Ok((*addr).into()),
+            Self::SocketV6(addr) => Ok((*addr).into()),
+            Self::Domain(domain, port) => {
+                let domain_str = std::str::from_utf8(domain).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Domain name contains invalid UTF-8 characters",
+                    )
+                })?;
+
+                match tokio::net::lookup_host((domain_str, *port)).await?.next() {
+                    Some(addr) => Ok(addr),
+                    None => Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Domain name '{}' could not be resolved", domain_str),
+                    )),
+                }
+            }
+        }
+    }
+}
+
 impl From<SocketAddr> for Address {
     fn from(value: SocketAddr) -> Self {
         match value {
@@ -162,6 +187,18 @@ impl TryFrom<String> for Address {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Address::try_from(value.as_str())
+    }
+}
+
+impl From<(String, u16)> for Address {
+    fn from(value: (String, u16)) -> Self {
+        Address::Domain(Bytes::from(value.0), value.1)
+    }
+}
+
+impl From<(&str, u16)> for Address {
+    fn from(value: (&str, u16)) -> Self {
+        Address::Domain(Bytes::copy_from_slice(value.0.as_bytes()), value.1)
     }
 }
 

@@ -49,7 +49,9 @@ endpoint-socks = ["socks-lib"]
 endpoint-tun = [
     "ombrac-netstack",
     "ipnet",
-    "tun-rs"
+    "tun-rs",
+    "moka",
+    "hickory-proto"
 ]
 endpoint-http = [
     "http", 
@@ -88,6 +90,8 @@ http-body-util = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["json"], optional = true }
 tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optional = true }
 dashmap = { workspace = true, optional = true }
+moka = { workspace = true, features = ["future"], optional = true }
+hickory-proto = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

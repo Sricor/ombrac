@@ -11,7 +11,7 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use ombrac::codec::{LengthDelimitedCodec, ServerHandshakeResponse, UpstreamMessage, length_codec};
-use ombrac::protocol::{self, Address, HandshakeError, PROTOCOLS_VERSION, Secret};
+use ombrac::protocol::{self, HandshakeError, PROTOCOLS_VERSION, Secret};
 use ombrac_macros::{debug, error, info, warn};
 use ombrac_transport::{Acceptor, Connection};
 
@@ -249,24 +249,7 @@ impl<C: Connection> ConnectionHandler<C> {
             }
         };
 
-        let dest_addr = match &original_dest {
-            Address::SocketV4(addr) => (*addr).into(),
-            Address::SocketV6(addr) => (*addr).into(),
-            Address::Domain(_, _) => {
-                let domain = original_dest.to_string();
-                match tokio::net::lookup_host(&domain).await?.next() {
-                    Some(addr) => addr,
-                    None => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            format!("Domain name {domain} could not be resolved"),
-                        ));
-                    }
-                }
-            }
-        };
-
-        let mut dest_stream = TcpStream::connect(dest_addr).await?;
+        let mut dest_stream = TcpStream::connect(original_dest.to_socket_addr().await?).await?;
 
         // Forward any data that was already buffered in the framing codec.
         let parts = framed.into_parts();
@@ -340,7 +323,8 @@ mod datagram {
                 token,
                 session_sockets: Cache::builder()
                     .time_to_idle(Duration::from_secs(120))
-                    .eviction_listener(|_key, _val, _cause| {
+                    .eviction_listener(|_key, val: (Arc<UdpSocket>, AbortHandle), _cause| {
+                        val.1.abort();
                         debug!("Session UDP socket evicted due to: {:?}", _cause);
                     })
                     .build(),

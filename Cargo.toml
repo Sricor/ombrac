@@ -57,6 +57,7 @@ etherparse = { version = "0.19", default-features = false }
 rand = { version = "0.9", default-features = false }
 tun-rs = { version = "2.7", default-features = false }
 ipnet = { version = "2.11", default-features = false }
+hickory-proto = { version = "0.25", default-features = false }
 
 # binary
 clap = { version = "4", default-features = false }
