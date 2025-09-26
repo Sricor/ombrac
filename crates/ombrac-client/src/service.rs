@@ -101,12 +101,12 @@ where
         }
 
         #[cfg(feature = "endpoint-tun")]
-        if let Some(tun_config) = &config.endpoint.tun {
-            if tun_config.tun_ipv4.is_some() || tun_config.tun_ipv6.is_some() {
-                let handle =
-                    Self::spawn_tun_accpet_loop(config, client, shutdown_tx.subscribe()).await?;
-                handles.push(handle);
-            }
+        if let Some(tun_config) = &config.endpoint.tun
+            && (tun_config.tun_ipv4.is_some() || tun_config.tun_ipv6.is_some())
+        {
+            let handle =
+                Self::spawn_tun_accpet_loop(config, client, shutdown_tx.subscribe()).await?;
+            handles.push(handle);
         }
 
         Ok(Service {
@@ -185,40 +185,29 @@ where
         ombrac: Arc<Client<T, C>>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> io::Result<JoinHandle<()>> {
-        use crate::endpoint::tun::Tun;
-        // use crate::endpoint::tun::fakedns::FakeDns;
+        use crate::endpoint::tun::{Tun, TunConfig};
         use ipnet::{Ipv4Net, Ipv6Net};
         use std::str::FromStr;
 
-        // let fakedns = {
-        //     let dns_pool = Ipv4Net::from_str(
-        //         config
-        //             .dns_pool
-        //             .clone()
-        //             .unwrap_or("198.18.0.0/16".to_string())
-        //             .as_str(),
-        //     )
-        //     .unwrap();
-        //     FakeDns::new(dns_pool.addr(), dns_pool.prefix_len())
-        // };
+        let config = config.endpoint.tun.as_ref().unwrap();
+        let mut tun_config = TunConfig::default();
+        if let Some(value) = &config.dns_pool {
+            tun_config.fakedns_cidr = value.parse().unwrap()
+        };
 
         let device = {
             let mut builder = tun_rs::DeviceBuilder::new();
             builder = builder.mtu(
                 config
-                    .endpoint
-                    .tun
-                    .as_ref()
-                    .unwrap()
                     .tun_mtu
                     .unwrap_or(1500),
             );
-            if let Some(ip_str) = &config.endpoint.tun.as_ref().unwrap().tun_ipv4 {
-                let ip = Ipv4Net::from_str(&ip_str).unwrap();
+            if let Some(ip_str) = &config.tun_ipv4 {
+                let ip = Ipv4Net::from_str(ip_str).unwrap();
                 builder = builder.ipv4(ip.addr(), ip.netmask(), None);
             }
-            if let Some(ip_str) = &config.endpoint.tun.as_ref().unwrap().tun_ipv6 {
-                let ip = Ipv6Net::from_str(&ip_str).unwrap();
+            if let Some(ip_str) = &config.tun_ipv6 {
+                let ip = Ipv6Net::from_str(ip_str).unwrap();
                 builder = builder.ipv6(ip.addr(), ip.netmask());
             }
             builder.build_async()?
@@ -232,7 +221,7 @@ where
         );
 
         let fd = device.into_fd()?;
-        let tun = Tun::new(ombrac);
+        let tun = Tun::new(tun_config.into(), ombrac);
         let handle = tokio::spawn(async move {
             let shutdown_signal = async {
                 let _ = shutdown_rx.recv().await;
