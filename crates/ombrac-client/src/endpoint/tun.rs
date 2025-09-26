@@ -57,6 +57,7 @@ mod fakedns {
         pub fn new(ip_net: Ipv4Net) -> Self {
             Self {
                 ip_net,
+                // 从 1 开始，跳过网络地址
                 next_ip_offset: Arc::new(AtomicU32::new(1)),
                 domain_to_ip: Cache::builder()
                     .max_capacity(10_000)
@@ -69,28 +70,34 @@ mod fakedns {
             }
         }
 
+        // --- FIXED ---
+        // 修正了 get_next_ip 函数中的潜在 Bug
         fn get_next_ip(&self) -> Option<Ipv4Addr> {
             let network = self.ip_net.network();
+            let broadcast = self.ip_net.broadcast();
             let num_hosts = self.ip_net.hosts().count();
             if num_hosts == 0 {
                 return None;
             }
 
-            let offset = self.next_ip_offset.fetch_add(1, Ordering::Relaxed);
-
-            let ip_offset = (offset as usize % num_hosts) + 1;
-
-            let next_ip_as_u32 = u32::from(network).wrapping_add(ip_offset as u32);
-            let next_ip = Ipv4Addr::from(next_ip_as_u32);
-
-            if next_ip == self.ip_net.broadcast() {
+            // 循环以确保我们不会意外地分配网络地址或广播地址
+            for _ in 0..num_hosts {
                 let offset = self.next_ip_offset.fetch_add(1, Ordering::Relaxed);
-                let ip_offset = (offset as usize % num_hosts) + 1;
+
+                // 使用环形方式获取偏移量，确保它在有效主机范围内
+                let ip_offset = (offset as u64 % num_hosts as u64) + 1;
+
                 let next_ip_as_u32 = u32::from(network).wrapping_add(ip_offset as u32);
-                Some(Ipv4Addr::from(next_ip_as_u32))
-            } else {
-                Some(next_ip)
+                let next_ip = Ipv4Addr::from(next_ip_as_u32);
+
+                // 确保 IP 地址有效
+                if next_ip != network && next_ip != broadcast {
+                    return Some(next_ip);
+                }
             }
+            // 如果在一次完整循环后仍未找到可用 IP，则返回 None
+            warn!("No available fake IP addresses left in the pool.");
+            None
         }
 
         pub async fn handle_dns_query(&self, query_bytes: &[u8]) -> Option<Message> {
@@ -161,7 +168,11 @@ pub struct TunConfig {
 impl Default for TunConfig {
     fn default() -> Self {
         Self {
-            fakedns_cidr: "198.18.0.0/16".parse().unwrap(),
+            // --- FIXED ---
+            // 使用 .expect() 提供更清晰的错误信息
+            fakedns_cidr: "198.18.0.0/16"
+                .parse()
+                .expect("Hardcoded FakeDNS CIDR is invalid"),
             udp_idle_timeout: Duration::from_secs(60),
             udp_absolute_timeout: Duration::from_secs(300),
             udp_session_channel_capacity: 128,
@@ -362,12 +373,12 @@ where
         Ok(())
     }
 
+    // --- REFACTORED ---
+    // 将 process_udp_packets 拆分为多个函数
     async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
         let (mut reader, mut writer) = udp_socket.split();
-
         let sessions: Arc<DashMap<SocketAddr, mpsc::Sender<(Bytes, Address)>>> =
             Arc::new(DashMap::new());
-
         let (response_tx, mut response_rx) =
             mpsc::channel::<UdpPacket>(self.config.udp_response_channel_capacity);
 
@@ -375,6 +386,7 @@ where
             tokio::select! {
                 biased;
                 _ = token.cancelled() => break,
+
                 Some(packet_to_send) = response_rx.recv() => {
                     if let Err(e) = writer.send(packet_to_send).await {
                         error!("Failed to send UDP packet back to TUN stack: {}", e);
@@ -387,64 +399,93 @@ where
                         None => break,
                     };
 
-                    let local_addr = packet.local_addr;
-                    let initial_remote_addr = packet.remote_addr;
-                    let data: Bytes = packet.data.into_bytes();
-
-                    if packet.remote_addr.port() == 53
-                        && let Some(response_message) = self.fakedns.handle_dns_query(&data).await {
-                            if let Ok(response_bytes) = response_message.to_vec() {
-                                let dns_response_packet = UdpPacket {
-                                    data: Packet::new(response_bytes),
-                                    local_addr: initial_remote_addr,
-                                    remote_addr: local_addr,
-                                };
-                                if let Err(e) = writer.send(dns_response_packet).await {
-                                    error!("Failed to send DNS response to TUN stack: {}", e);
-                                }
-                            } else {
-                                error!("Failed to serialize DNS response");
-                            }
-                            continue;
-                        }
-
-                    let remote_addr: Address = if let Some(domain) = self.fakedns.get_domain_by_ip(&initial_remote_addr.ip()).await {
-                        debug!("UDP New (FakeDNS): {} -> {} ({})", local_addr, initial_remote_addr, domain);
-                        Address::from((domain.to_utf8(), initial_remote_addr.port()))
-                    } else {
-                        debug!("UDP New: {} -> {}", local_addr, initial_remote_addr);
-                        Address::from(initial_remote_addr)
-                    };
-
-                    match sessions.entry(local_addr) {
-                        Entry::Occupied(entry) => {
-                            if entry.get().send((data, remote_addr)).await.is_err() {
-                                entry.remove();
-                            }
-                        }
-                        Entry::Vacant(entry) => {
-                            let (tx, rx) = mpsc::channel(self.config.udp_session_channel_capacity);
-                            if tx.send((data, remote_addr.clone())).await.is_err() {
-                                continue;
-                            }
-
-                            entry.insert(tx);
-
-                            tokio::spawn(self.clone().handle_udp_flow(
-                                rx,
-                                response_tx.clone(),
-                                sessions.clone(),
-                                local_addr,
-                                initial_remote_addr,
-                            ));
-                        }
+                    // 首先处理 DNS 查询
+                    if packet.remote_addr.port() == 53 {
+                        self.handle_dns_packet(packet, &mut writer).await;
+                        continue;
                     }
+
+                    // 处理其他 UDP 流量
+                    self.handle_data_packet(packet, &sessions, response_tx.clone()).await;
                 }
             }
         }
         debug!("UDP packet processing task has finished.");
     }
 
+    async fn handle_dns_packet(&self, packet: UdpPacket, writer: &mut SplitWrite) {
+        let data: Bytes = packet.data.into_bytes();
+        if let Some(response_message) = self.fakedns.handle_dns_query(&data).await {
+            match response_message.to_vec() {
+                Ok(response_bytes) => {
+                    let dns_response_packet = UdpPacket {
+                        data: Packet::new(response_bytes),
+                        local_addr: packet.remote_addr,
+                        remote_addr: packet.local_addr,
+                    };
+                    if let Err(e) = writer.send(dns_response_packet).await {
+                        error!("Failed to send DNS response to TUN stack: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to serialize DNS response: {}", e);
+                }
+            }
+        }
+    }
+
+    async fn handle_data_packet(
+        &self,
+        packet: UdpPacket,
+        sessions: &Arc<DashMap<SocketAddr, mpsc::Sender<(Bytes, Address)>>>,
+        response_tx: mpsc::Sender<UdpPacket>,
+    ) {
+        let local_addr = packet.local_addr;
+        let initial_remote_addr = packet.remote_addr;
+        let data: Bytes = packet.data.into_bytes();
+
+        let remote_addr: Address =
+            if let Some(domain) = self.fakedns.get_domain_by_ip(&initial_remote_addr.ip()).await {
+                debug!(
+                    "UDP New (FakeDNS): {} -> {} ({})",
+                    local_addr, initial_remote_addr, domain
+                );
+                Address::from((domain.to_utf8(), initial_remote_addr.port()))
+            } else {
+                debug!("UDP New: {} -> {}", local_addr, initial_remote_addr);
+                Address::from(initial_remote_addr)
+            };
+
+        match sessions.entry(local_addr) {
+            Entry::Occupied(entry) => {
+                if entry.get().send((data, remote_addr)).await.is_err() {
+                    // 通道已关闭，意味着 handle_udp_flow 任务已结束
+                    // 任务本身会清理 sessions map，这里可以安全地移除
+                    entry.remove();
+                }
+            }
+            Entry::Vacant(entry) => {
+                let (tx, rx) = mpsc::channel(self.config.udp_session_channel_capacity);
+                if tx.send((data, remote_addr.clone())).await.is_err() {
+                    // 如果初始发送失败，则不创建新任务
+                    return;
+                }
+
+                entry.insert(tx);
+
+                tokio::spawn(self.clone().handle_udp_flow(
+                    rx,
+                    response_tx,
+                    sessions.clone(),
+                    local_addr,
+                    initial_remote_addr,
+                ));
+            }
+        }
+    }
+
+    // --- FIXED ---
+    // 修正了 UDP 会话处理中的超时逻辑
     async fn handle_udp_flow(
         self,
         mut rx: mpsc::Receiver<(Bytes, Address)>,
@@ -457,14 +498,22 @@ where
         let mut udp_session = self.client.open_associate();
         let start_time = Instant::now();
 
+        // 将空闲超时定时器移到循环外部
+        let idle_timeout = tokio::time::sleep(self.config.udp_idle_timeout);
+        tokio::pin!(idle_timeout);
+
         loop {
             tokio::select! {
+                // 从本地 TUN 栈接收数据
                 Some((data, dest_addr)) = rx.recv() => {
                     if let Err(e) = udp_session.send_to(data, dest_addr.clone()).await {
                         error!("Failed to send UDP packet from {} to {}: {}", local_addr, dest_addr, e);
                     }
+                    // 在活动后重置空闲超时
+                    idle_timeout.as_mut().reset(tokio::time::Instant::now() + self.config.udp_idle_timeout);
                 }
 
+                // 从远程服务器接收数据
                 Some((data, _from_addr)) = udp_session.recv_from() => {
                     let response_packet = UdpPacket {
                         data: Packet::new(data),
@@ -476,14 +525,18 @@ where
                          error!("UDP response channel closed, terminating flow for {}", local_addr);
                          break;
                     }
+                    // 在活动后重置空闲超时
+                    idle_timeout.as_mut().reset(tokio::time::Instant::now() + self.config.udp_idle_timeout);
                 }
 
-                _ = tokio::time::sleep(self.config.udp_idle_timeout) => {
+                // 空闲超时触发
+                _ = &mut idle_timeout => {
                     info!("UDP stream {} to {} timed out due to inactivity.", local_addr, initial_remote_addr);
                     break;
                 }
             }
 
+            // 检查绝对超时
             if start_time.elapsed() > self.config.udp_absolute_timeout {
                 info!(
                     "UDP stream {} to {} closed due to absolute timeout.",
@@ -493,6 +546,7 @@ where
             }
         }
 
+        // 清理会话
         sessions.remove(&local_addr);
         debug!("UDP stream from {} closed and cleaned up.", local_addr);
     }
