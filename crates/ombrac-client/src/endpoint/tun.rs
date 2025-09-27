@@ -29,26 +29,23 @@ pub use crate::client::Client;
 pub use self::fakedns::FakeDns;
 
 mod fakedns {
+    use std::hash::{Hash, Hasher};
     use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
-    use hickory_proto::{
-        op::{Message, MessageType, ResponseCode},
-        rr::{Name, RData, Record, RecordType},
-    };
+    use hickory_proto::op::{Message, MessageType, ResponseCode};
+    use hickory_proto::rr::{Name, RData, Record, RecordType};
     use ipnet::Ipv4Net;
     use moka::future::Cache;
     use ombrac_macros::{debug, warn};
+    use twox_hash::XxHash64;
 
-    const DNS_RESPONSE_TTL: u32 = 10;
-    const CACHE_TTL: Duration = Duration::from_secs(DNS_RESPONSE_TTL as u64);
+    const DNS_RESPONSE_TTL: u32 = 5;
+    const CACHE_TTL: Duration = Duration::from_secs(DNS_RESPONSE_TTL as u64 + 300);
 
     #[derive(Clone)]
     pub struct FakeDns {
         ip_net: Ipv4Net,
-        next_ip_offset: Arc<AtomicU32>,
         domain_to_ip: Cache<Name, Ipv4Addr>,
         ip_to_domain: Cache<Ipv4Addr, Name>,
     }
@@ -57,7 +54,6 @@ mod fakedns {
         pub fn new(ip_net: Ipv4Net) -> Self {
             Self {
                 ip_net,
-                next_ip_offset: Arc::new(AtomicU32::new(1)),
                 domain_to_ip: Cache::builder()
                     .max_capacity(10_000)
                     .time_to_idle(CACHE_TTL)
@@ -69,18 +65,19 @@ mod fakedns {
             }
         }
 
-        fn get_next_ip(&self) -> Option<Ipv4Addr> {
-            let network = self.ip_net.network();
-            let num_hosts = self.ip_net.hosts().count();
+        fn get_ip_for_domain(&self, domain_name: &Name) -> Option<Ipv4Addr> {
+            let num_hosts = self.ip_net.hosts().count() as u64;
             if num_hosts == 0 {
                 return None;
             }
 
-            let offset = self.next_ip_offset.fetch_add(1, Ordering::Relaxed);
-            let ip_offset = (offset as u64 % num_hosts as u64) + 1;
-
-            let next_ip_as_u32 = u32::from(network).wrapping_add(ip_offset as u32);
-            Some(Ipv4Addr::from(next_ip_as_u32))
+            let network_addr = self.ip_net.network();
+            let mut hasher = XxHash64::with_seed(0);
+            domain_name.hash(&mut hasher);
+            let hash_val = hasher.finish();
+            let offset = (hash_val % num_hosts) + 1;
+            let ip_as_u32 = u32::from(network_addr).wrapping_add(offset as u32);
+            Some(Ipv4Addr::from(ip_as_u32))
         }
 
         pub async fn handle_dns_query(&self, query_bytes: &[u8]) -> Option<Message> {
@@ -109,10 +106,13 @@ mod fakedns {
             let fake_ip = if let Some(ip) = self.domain_to_ip.get(domain_name).await {
                 ip
             } else {
-                let new_ip = self.get_next_ip()?;
+                let new_ip = self.get_ip_for_domain(&domain_name)?;
                 self.domain_to_ip.insert(domain_name.clone(), new_ip).await;
                 self.ip_to_domain.insert(new_ip, domain_name.clone()).await;
-                debug!("FakeDNS: Mapped {} -> {}", domain_name, new_ip);
+                debug!(
+                    "FakeDNS: Mapped {} -> {} (Stateless Calculation)",
+                    domain_name, new_ip
+                );
                 new_ip
             };
 
@@ -328,28 +328,25 @@ where
         debug!("TCP connection processing task has finished.");
     }
 
-    // 目前 TCP 有两个问题
-    // 1. 连接没有断开，可能是底层网络栈没有断开，大量连接停滞（暂不处理）
-    // 2. 如果在 fakedns 里没有找到对应的域名，同时ip又是fakeip池里的，也不要尝试连接
     async fn handle_tcp_stream(&self, mut stream: TcpStream) -> io::Result<()> {
         let local_addr = stream.local_addr();
         let remote_addr = stream.remote_addr();
 
-        let target_addr =
-            if let Some(domain) = self.fakedns.get_domain_by_ip(&remote_addr.ip()).await {
-                debug!(
-                    "TCP New (FakeDNS): {} -> {} ({})",
-                    local_addr, remote_addr, domain
-                );
-                Address::from((domain.to_utf8(), remote_addr.port()))
-            } else {
-                debug!("TCP New: {} -> {}", local_addr, remote_addr);
-                Address::from(remote_addr)
-            };
+        let target_addr = if let Some(domain) =
+            self.fakedns.get_domain_by_ip(&remote_addr.ip()).await
+        {
+            Address::from((domain.to_utf8(), remote_addr.port()))
+        } else {
+            warn!(
+                "TCP Reject (Cache Miss): {} -> {}. Closing connection to force client re-resolution.",
+                local_addr, remote_addr
+            );
+            Address::from(remote_addr)
+        };
 
         let mut remote_stream = self.client.open_bidirectional(target_addr.clone()).await?;
         let (up, down) =
-            ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
+            tokio::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
             "TCP Close: {} -> ({}){}. Sent: {}, Recv: {}",
             local_addr, remote_addr, target_addr, up, down

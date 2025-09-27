@@ -51,6 +51,7 @@ endpoint-tun = [
     "ipnet",
     "tun-rs",
     "moka",
+    "twox-hash",
     "hickory-proto"
 ]
 endpoint-http = [
@@ -92,6 +93,7 @@ tun-rs = { workspace = true, features = ["async_tokio", "async_framed"], optiona
 dashmap = { workspace = true, optional = true }
 moka = { workspace = true, features = ["future"], optional = true }
 hickory-proto = { workspace = true, optional = true }
+twox-hash = { workspace = true, features = ["xxhash64"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

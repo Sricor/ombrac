@@ -236,14 +236,20 @@ impl TcpListener {
                     }
                 }
                 Err(_) => {
-                    socket_control.shared_state.read_closed.store(true, std::sync::atomic::Ordering::Release);
+                    socket_control
+                        .shared_state
+                        .read_closed
+                        .store(true, std::sync::atomic::Ordering::Release);
                     notify_read = true;
                 }
             }
         }
 
         if !socket.can_recv() && socket.state() != tcp::State::Listen {
-            socket_control.shared_state.read_closed.store(true, std::sync::atomic::Ordering::Release);
+            socket_control
+                .shared_state
+                .read_closed
+                .store(true, std::sync::atomic::Ordering::Release);
             notify_read = true;
         }
 
