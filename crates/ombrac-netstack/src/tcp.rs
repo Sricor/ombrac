@@ -197,43 +197,50 @@ impl TcpConnectionWorker {
     async fn accept_loop(&mut self, mut device: NetstackDevice) -> std::io::Result<()> {
         loop {
             // --- STAGE 1: WORK-DRAINING ---
-            // Keep processing as long as we are making progress to avoid premature sleeping.
-            let mut work_done = true;
-            while work_done {
-                // Assume no work will be done in this iteration until proven otherwise.
-                work_done = false;
+            let mut progress = true;
+            while progress {
+                progress = false;
 
-                // Drain all pending inbound packets without blocking.
+                // Drain inbound packets
                 while let Ok(packet) = self.inbound.try_recv() {
                     if let Err(_e) = self.process_inbound_frame(packet).await {
                         error!("Error processing inbound frame: {}", _e);
                     }
-                    work_done = true;
+                    progress = true;
                 }
 
-                // Poll smoltcp for any network events (e.g., received ACKs, timer expirations).
+                // Poll smoltcp for network events
                 let now = smoltcp::time::Instant::now();
                 if self.iface.poll(now, &mut device, &mut self.sockets) != PollResult::None {
-                    work_done = true;
+                    progress = true;
                 }
 
-                // Handle IO for all active sockets (app data -> smoltcp, smoltcp -> app).
+                // Handle IO for all active sockets
+                let mut total_bytes_processed = 0;
                 for (socket_handle, socket_control) in self.socket_maps.iter_mut() {
                     let socket = self.sockets.get_mut::<Socket>(*socket_handle);
-                    if Self::handle_socket_io(socket, socket_control) {
-                        work_done = true;
+                    let (read, written) = Self::handle_socket_io(socket, socket_control);
+                    if read > 0 || written > 0 {
+                        total_bytes_processed += read + written;
                     }
                 }
-
-                // Prune any closed/aborted sockets.
-                if Self::prune_sockets(&mut self.sockets, &mut self.socket_maps) {
-                    work_done = true;
+                if total_bytes_processed > 0 {
+                    progress = true;
                 }
 
-                // Poll smoltcp again, as the IO and pruning might have changed its state.
+                // Prune any closed/aborted sockets
+                if Self::prune_sockets(&mut self.sockets, &mut self.socket_maps) {
+                    progress = true;
+                }
+
+                // Poll smoltcp again after IO
                 let now = smoltcp::time::Instant::now();
                 if self.iface.poll(now, &mut device, &mut self.sockets) != PollResult::None {
-                    work_done = true;
+                    progress = true;
+                }
+
+                if progress && total_bytes_processed == 0 && self.inbound.is_empty() {
+                    tokio::task::yield_now().await;
                 }
             }
 
@@ -363,19 +370,25 @@ impl TcpConnectionWorker {
         Ok(())
     }
 
-    fn handle_socket_io(socket: &mut Socket, socket_control: &mut SocketIOHandle) -> bool {
-        let mut did_work = false;
+    fn handle_socket_io(
+        socket: &mut Socket,
+        socket_control: &mut SocketIOHandle,
+    ) -> (usize, usize) {
+        let mut bytes_read = 0;
+        let mut bytes_written = 0;
         let mut notify_read = false;
 
         if socket.can_recv() {
             match socket.recv(|buffer| {
                 let n = socket_control.recv_buffer_prod.push_slice(buffer);
+                if n > 0 {
+                    bytes_read += n;
+                }
                 (n, buffer.len())
             }) {
                 Ok(n) => {
                     if n > 0 {
                         notify_read = true;
-                        did_work = true;
                     }
                 }
                 Err(_e) => {
@@ -385,12 +398,10 @@ impl TcpConnectionWorker {
                         .read_closed
                         .store(true, Ordering::Release);
                     notify_read = true;
-                    did_work = true;
                 }
             }
         }
 
-        // Check if the socket was closed by the remote and we haven't notified the stream yet.
         if !socket.is_open()
             && !socket_control
                 .shared_state
@@ -402,7 +413,6 @@ impl TcpConnectionWorker {
                 .read_closed
                 .store(true, Ordering::Release);
             notify_read = true;
-            did_work = true;
         }
 
         if notify_read {
@@ -410,23 +420,25 @@ impl TcpConnectionWorker {
         }
 
         let mut notify_write = false;
+
         while socket.can_send() && !socket_control.send_buffer_cons.is_empty() {
             match socket.send(|buffer| {
                 let n = socket_control.send_buffer_cons.pop_slice(buffer);
                 (n, buffer.len())
             }) {
                 Ok(n) if n > 0 => {
+                    bytes_written += n;
                     notify_write = true;
-                    did_work = true;
                 }
-                _ => break, // Can't send more, or error.
+                _ => break,
             }
         }
+
         if notify_write {
             socket_control.shared_state.send_waker.wake();
         }
 
-        did_work
+        (bytes_read, bytes_written)
     }
 
     fn prune_sockets(
