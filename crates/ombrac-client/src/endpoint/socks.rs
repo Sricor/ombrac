@@ -41,6 +41,7 @@ where
         let mut dest_stream = self.client.open_bidirectional(dst_addr.clone()).await?;
         match ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await {
             Ok(stats) => {
+                #[cfg(feature = "tracing")]
                 tracing::info!(
                     src_addr = stream.local_addr().to_string(),
                     dst_addr = dst_addr.to_string(),
@@ -51,6 +52,7 @@ where
                 );
             }
             Err((err, stats)) => {
+                #[cfg(feature = "tracing")]
                 tracing::error!(
                     src_addr = stream.local_addr().to_string(),
                     dst_addr = dst_addr.to_string(),

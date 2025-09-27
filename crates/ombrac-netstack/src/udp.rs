@@ -78,8 +78,8 @@ impl SplitRead {
 
             let packet = match IpPacket::new_checked(&original_bytes) {
                 Ok(p) => p,
-                Err(err) => {
-                    error!("invalid IP packet: {err}");
+                Err(_e) => {
+                    error!("invalid IP packet: {_e}");
                     return None;
                 }
             };
@@ -90,9 +90,9 @@ impl SplitRead {
 
             let udp_packet = match smoltcp::wire::UdpPacket::new_checked(ip_payload) {
                 Ok(p) => p,
-                Err(err) => {
+                Err(_e) => {
                     error!(
-                        "invalid err: {err}, src_ip: {src_ip}, dst_ip: {dst_ip}, \
+                        "invalid err: {_e}, src_ip: {src_ip}, dst_ip: {dst_ip}, \
                          payload: {ip_payload:?}"
                     );
                     return None;

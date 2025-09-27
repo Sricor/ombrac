@@ -94,8 +94,8 @@ impl TcpConnection {
             };
 
             let worker_handle = tokio::spawn(async move {
-                if let Err(err) = worker.accept_loop(device).await {
-                    error!("[Worker {}] exited with error: {}", i, err);
+                if let Err(_e) = worker.accept_loop(device).await {
+                    error!("[Worker {}] exited with error: {}", i, _e);
                 }
             });
             _handles.push(worker_handle);
@@ -205,8 +205,8 @@ impl TcpConnectionWorker {
 
                 // Drain all pending inbound packets without blocking.
                 while let Ok(packet) = self.inbound.try_recv() {
-                    if let Err(e) = self.process_inbound_frame(packet).await {
-                        error!("Error processing inbound frame: {}", e);
+                    if let Err(_e) = self.process_inbound_frame(packet).await {
+                        error!("Error processing inbound frame: {}", _e);
                     }
                     work_done = true;
                 }
@@ -255,8 +255,8 @@ impl TcpConnectionWorker {
                 maybe_packet = self.inbound.recv() => {
                     match maybe_packet {
                         Some(packet) => {
-                            if let Err(e) = self.process_inbound_frame(packet).await {
-                                error!("Error processing inbound frame: {}", e);
+                            if let Err(_e) = self.process_inbound_frame(packet).await {
+                                error!("Error processing inbound frame: {}", _e);
                             }
                             // After processing, continue to the top of 'main_loop to enter the work-draining phase.
                         },

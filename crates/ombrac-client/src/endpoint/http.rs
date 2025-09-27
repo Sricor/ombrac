@@ -122,6 +122,7 @@ where
                     .await
                     {
                         Ok(stats) => {
+                            #[cfg(feature = "tracing")]
                             tracing::info!(
                                 src_addr = remote_addr.to_string(),
                                 dst_addr = target_addr.to_string(),
@@ -132,6 +133,7 @@ where
                             );
                         }
                         Err((err, stats)) => {
+                            #[cfg(feature = "tracing")]
                             tracing::error!(
                                 src_addr = remote_addr.to_string(),
                                 dst_addr = target_addr.to_string(),

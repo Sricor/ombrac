@@ -60,8 +60,8 @@ impl<T: Acceptor> Server<T> {
                                 }
                             });
                         },
-                        Err(e) => {
-                            error!("Failed to accept connection: {}", e)
+                        Err(_e) => {
+                            error!("Failed to accept connection: {}", _e)
                         },
                     }
                 },
@@ -120,21 +120,21 @@ impl<C: Connection> ConnectionHandler<C> {
     async fn validate_handshake(
         message: UpstreamMessage,
         secret: Secret,
-        peer_addr: SocketAddr,
+        _peer_addr: SocketAddr,
         framed: &mut Framed<&mut C::Stream, LengthDelimitedCodec>,
     ) -> io::Result<()> {
         if let UpstreamMessage::Hello(hello) = message {
             let response = if hello.version != PROTOCOLS_VERSION {
                 warn!(
                     "{} Handshake failed: Unsupported protocol version",
-                    peer_addr
+                    _peer_addr
                 );
                 ServerHandshakeResponse::Err(HandshakeError::UnsupportedVersion)
             } else if hello.secret != secret {
-                warn!("{} Handshake failed: Invalid secret", peer_addr);
+                warn!("{} Handshake failed: Invalid secret", _peer_addr);
                 ServerHandshakeResponse::Err(HandshakeError::InvalidSecret)
             } else {
-                debug!("{} Handshake successful", peer_addr);
+                debug!("{} Handshake successful", _peer_addr);
                 ServerHandshakeResponse::Ok
             };
 
@@ -192,10 +192,10 @@ impl<C: Connection> ConnectionHandler<C> {
                     );
                 }
             }
-            Err(join_err) => {
+            Err(_join_err) => {
                 warn!(
                     "{} Client connection handler task failed: {}",
-                    self.peer_addr, join_err
+                    self.peer_addr, _join_err
                 );
             }
         }
@@ -216,8 +216,8 @@ impl<C: Connection> ConnectionHandler<C> {
 
                         // Spawn a separate task for each TCP stream to avoid blocking the acceptor.
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_tcp_stream(stream, peer_addr).await {
-                                warn!("{} Stream handler error: {}", peer_addr, e);
+                            if let Err(_e) = Self::handle_tcp_stream(stream, peer_addr).await {
+                                warn!("{} Stream handler error: {}", peer_addr, _e);
                             }
                         });
                     }
@@ -227,7 +227,7 @@ impl<C: Connection> ConnectionHandler<C> {
     }
 
     /// Handles a single TCP stream, proxying data to the requested destination.
-    async fn handle_tcp_stream(mut stream: C::Stream, peer_addr: SocketAddr) -> io::Result<()> {
+    async fn handle_tcp_stream(mut stream: C::Stream, _peer_addr: SocketAddr) -> io::Result<()> {
         let mut framed = Framed::new(&mut stream, length_codec());
 
         // Read the destination address from the client.
@@ -261,8 +261,9 @@ impl<C: Connection> ConnectionHandler<C> {
         // Copy data in both directions until one side closes.
         match ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await {
             Ok(stats) => {
+                #[cfg(feature = "tracing")]
                 tracing::info!(
-                    src_addr = peer_addr.to_string(),
+                    src_addr = _peer_addr.to_string(),
                     send = stats.a_to_b_bytes,
                     recv = stats.b_to_a_bytes,
                     status = "ok",
@@ -270,8 +271,9 @@ impl<C: Connection> ConnectionHandler<C> {
                 );
             }
             Err((err, stats)) => {
+                #[cfg(feature = "tracing")]
                 tracing::error!(
-                    src_addr = peer_addr.to_string(),
+                    src_addr = _peer_addr.to_string(),
                     send = stats.a_to_b_bytes,
                     recv = stats.b_to_a_bytes,
                     status = "err",

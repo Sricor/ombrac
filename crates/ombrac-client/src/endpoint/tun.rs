@@ -358,6 +358,7 @@ where
 
         match ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await {
             Ok(stats) => {
+                #[cfg(feature = "tracing")]
                 tracing::info!(
                     src_addr = local_addr.to_string(),
                     fake_addr = remote_addr.to_string(),
@@ -369,6 +370,7 @@ where
                 );
             }
             Err((err, stats)) => {
+                #[cfg(feature = "tracing")]
                 tracing::error!(
                     src_addr = local_addr.to_string(),
                     fake_addr = remote_addr.to_string(),
