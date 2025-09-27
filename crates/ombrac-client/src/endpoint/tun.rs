@@ -346,7 +346,7 @@ where
 
         let mut remote_stream = self.client.open_bidirectional(target_addr.clone()).await?;
         let (up, down) =
-            tokio::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
+            ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
             "TCP Close: {} -> ({}){}. Sent: {}, Recv: {}",
             local_addr, remote_addr, target_addr, up, down
