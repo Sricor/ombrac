@@ -11,7 +11,7 @@ use ringbuf::traits::{Consumer, Observer, Producer};
 use smoltcp::iface::{Interface, PollResult, SocketSet};
 use smoltcp::socket::tcp::{CongestionControl, Socket, SocketBuffer, State};
 use smoltcp::wire::{IpCidr, IpProtocol, TcpPacket};
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::buffer::BufferPool;
@@ -242,10 +242,7 @@ impl TcpConnectionWorker {
             // without any work being done. We are now idle and can safely wait for the next event.
 
             let now = smoltcp::time::Instant::now();
-            let smoltcp_delay = self
-                .iface
-                .poll_delay(now, &self.sockets)
-                .map(|d| d.into());
+            let smoltcp_delay = self.iface.poll_delay(now, &self.sockets).map(|d| d.into());
 
             tokio::select! {
                 biased;
@@ -394,7 +391,12 @@ impl TcpConnectionWorker {
         }
 
         // Check if the socket was closed by the remote and we haven't notified the stream yet.
-        if !socket.is_open() && !socket_control.shared_state.read_closed.load(Ordering::Acquire) {
+        if !socket.is_open()
+            && !socket_control
+                .shared_state
+                .read_closed
+                .load(Ordering::Acquire)
+        {
             socket_control
                 .shared_state
                 .read_closed
