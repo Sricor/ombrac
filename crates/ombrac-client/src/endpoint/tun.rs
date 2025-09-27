@@ -45,6 +45,7 @@ mod fakedns {
     use ombrac_macros::{debug, warn};
     use twox_hash::XxHash64;
 
+    const XX_HASH_SEED: u64 = 0;
     const DNS_RESPONSE_TTL: u32 = 5;
     const CACHE_TTL: Duration = Duration::from_secs(DNS_RESPONSE_TTL as u64 + 300);
 
@@ -77,7 +78,7 @@ mod fakedns {
             }
 
             let network_addr = self.ip_net.network();
-            let mut hasher = XxHash64::with_seed(0);
+            let mut hasher = XxHash64::with_seed(XX_HASH_SEED);
             domain_name.hash(&mut hasher);
             let hash_val = hasher.finish();
             let offset = (hash_val % num_hosts) + 1;
@@ -358,7 +359,7 @@ where
             ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
             "{} Connect {}. Sent: {}, Recv: {}",
-            local_addr, remote_addr, up, down
+            local_addr, target_addr, up, down
         );
         Ok(())
     }
@@ -437,13 +438,8 @@ where
             .get_domain_by_ip(&initial_remote_addr.ip())
             .await
         {
-            debug!(
-                "UDP New (FakeDNS): {} -> {} ({})",
-                local_addr, initial_remote_addr, domain
-            );
             Address::from((domain.to_utf8(), initial_remote_addr.port()))
         } else {
-            debug!("UDP New: {} -> {}", local_addr, initial_remote_addr);
             Address::from(initial_remote_addr)
         };
 
