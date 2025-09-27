@@ -388,13 +388,11 @@ where
                         None => break,
                     };
 
-                    // 首先处理 DNS 查询
                     if packet.dst_addr.port() == 53 {
                         self.handle_dns_packet(packet, &mut writer).await;
                         continue;
                     }
 
-                    // 处理其他 UDP 流量
                     self.handle_data_packet(packet, &sessions, response_tx.clone()).await;
                 }
             }
@@ -480,22 +478,18 @@ where
         let mut udp_session = self.client.open_associate();
         let start_time = Instant::now();
 
-        // 将空闲超时定时器移到循环外部
         let idle_timeout = tokio::time::sleep(self.config.udp_idle_timeout);
         tokio::pin!(idle_timeout);
 
         loop {
             tokio::select! {
-                // 从本地 TUN 栈接收数据
                 Some((data, dest_addr)) = rx.recv() => {
                     if let Err(e) = udp_session.send_to(data, dest_addr.clone()).await {
                         error!("Failed to send UDP packet from {} to {}: {}", local_addr, dest_addr, e);
                     }
-                    // 在活动后重置空闲超时
                     idle_timeout.as_mut().reset(tokio::time::Instant::now() + self.config.udp_idle_timeout);
                 }
 
-                // 从远程服务器接收数据
                 Some((data, _from_addr)) = udp_session.recv_from() => {
                     let response_packet = UdpPacket {
                         data: Packet::new(data),
@@ -507,11 +501,9 @@ where
                          error!("UDP response channel closed, terminating flow for {}", local_addr);
                          break;
                     }
-                    // 在活动后重置空闲超时
                     idle_timeout.as_mut().reset(tokio::time::Instant::now() + self.config.udp_idle_timeout);
                 }
 
-                // 空闲超时触发
                 _ = &mut idle_timeout => {
                     debug!("UDP stream {} to {} timed out due to inactivity.", local_addr, initial_remote_addr);
                     break;
@@ -528,7 +520,6 @@ where
             }
         }
 
-        // 清理会话
         sessions.remove(&local_addr);
         debug!("UDP stream from {} closed and cleaned up.", local_addr);
     }

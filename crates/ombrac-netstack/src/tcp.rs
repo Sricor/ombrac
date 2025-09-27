@@ -231,7 +231,8 @@ impl TcpConnection {
                         notify_read = true;
                     }
                 }
-                Err(_) => {
+                Err(_e) => {
+                    error!("Socket recv error: {}. Closing read side.", _e);
                     socket_control
                         .shared_state
                         .read_closed
@@ -299,7 +300,7 @@ impl TcpConnection {
         device: &mut NetstackDevice,
         mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
-        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
+        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(50);
 
         let mut sockets = SocketSet::new(vec![]);
         let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, SocketIOHandle> = HashMap::new();
@@ -308,6 +309,7 @@ impl TcpConnection {
 
         loop {
             let now = smoltcp::time::Instant::now();
+            // smoltcp_delay is the maximum time we should wait before the next poll.
             let smoltcp_delay = iface
                 .poll_delay(now, &sockets)
                 .map(|d| d.into())
@@ -316,16 +318,24 @@ impl TcpConnection {
             tokio::select! {
                 biased;
                 Some(event) = notifier_rx.recv() => {
-                    if let IfaceEvent::TcpStream(stream) = event {
-                        let (socket, handle) = *stream;
-                        let socket_handle = sockets.add(socket);
-                        socket_maps.insert(socket_handle, handle);
+                    match event {
+                        IfaceEvent::TcpStream(stream) => {
+                            let (socket, handle) = *stream;
+                            let socket_handle = sockets.add(socket);
+                            socket_maps.insert(socket_handle, handle);
+                        },
+                        IfaceEvent::TcpSocketReady |
+                        IfaceEvent::DeviceReady |
+                        IfaceEvent::Icmp |
+                        IfaceEvent::TcpSocketClosed => {}
                     }
                 }
                 _ = tokio::time::sleep(smoltcp_delay) => {},
                 _ = housekeeping_timer.tick() => {},
             }
 
+            // Poll the interface to process any pending packets or timers.
+            // This now runs immediately after receiving any IfaceEvent.
             let now = smoltcp::time::Instant::now();
             iface.poll(now, device, &mut sockets);
 
@@ -362,6 +372,7 @@ mod stream {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
     use tokio::sync::mpsc::Sender;
 
+    use crate::error;
     use crate::stack::IfaceEvent;
 
     pub(crate) type RbProducer = ringbuf::Prod<Arc<HeapRb<u8>>>;
@@ -423,7 +434,12 @@ mod stream {
             let n = self.recv_buffer_cons.pop_slice(unfilled_slice);
             buf.advance(n);
 
-            let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
+            if let Err(_e) = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
+                error!(
+                    "Failed to send TcpSocketReady notification on poll_read: {}",
+                    _e
+                );
+            }
 
             Poll::Ready(Ok(()))
         }
@@ -444,7 +460,12 @@ mod stream {
 
             if self.send_buffer_prod.is_full() {
                 self.shared_state.send_waker.register(cx.waker());
-                let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
+                if let Err(e) = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
+                    error!(
+                        "Failed to send TcpSocketReady notification on poll_write (buffer full): {}",
+                        e
+                    );
+                }
                 return Poll::Pending;
             }
 
@@ -470,7 +491,12 @@ mod stream {
         ) -> Poll<std::io::Result<()>> {
             if !self.send_buffer_prod.is_empty() {
                 self.shared_state.send_waker.register(cx.waker());
-                let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
+                if let Err(e) = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
+                    error!(
+                        "Failed to send TcpSocketReady notification on poll_flush: {}",
+                        e
+                    );
+                }
                 return Poll::Pending;
             }
 
