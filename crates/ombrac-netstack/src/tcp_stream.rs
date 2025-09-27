@@ -16,6 +16,7 @@ pub(crate) type RbConsumer = ringbuf::Cons<Arc<HeapRb<u8>>>;
 pub(crate) struct SharedState {
     pub(crate) recv_waker: AtomicWaker,
     pub(crate) send_waker: AtomicWaker,
+    pub(crate) read_closed: AtomicBool,
     pub(crate) socket_dropped: AtomicBool,
 }
 
@@ -24,6 +25,7 @@ impl SharedState {
         Self {
             recv_waker: AtomicWaker::new(),
             send_waker: AtomicWaker::new(),
+            read_closed: AtomicBool::new(false),
             socket_dropped: AtomicBool::new(false),
         }
     }
@@ -79,6 +81,17 @@ impl AsyncWrite for TcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        if self
+            .shared_state
+            .socket_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Socket is closing",
+            )));
+        }
+
         if self.send_buffer_prod.is_full() {
             self.shared_state.send_waker.register(cx.waker());
             let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
@@ -103,8 +116,14 @@ impl AsyncWrite for TcpStream {
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
+        if !self.send_buffer_prod.is_empty() {
+            self.shared_state.send_waker.register(cx.waker());
+            let _ = self.stack_notifier.try_send(IfaceEvent::TcpSocketReady);
+            return Poll::Pending;
+        }
+
         match self.stack_notifier.try_send(IfaceEvent::TcpSocketReady) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(_) => Poll::Ready(Err(std::io::Error::new(
@@ -115,11 +134,22 @@ impl AsyncWrite for TcpStream {
     }
 
     fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::task::ready!(self.poll_flush(cx))?;
-        Poll::Ready(Ok(()))
+        std::task::ready!(self.as_mut().poll_flush(cx))?;
+
+        self.shared_state
+            .socket_dropped
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        match self.stack_notifier.try_send(IfaceEvent::TcpSocketClosed) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(_) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Stack task has terminated",
+            ))),
+        }
     }
 }
 

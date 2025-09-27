@@ -19,7 +19,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = [
-    "binary",
     "tracing",
     "datagram",
     "endpoint-default",

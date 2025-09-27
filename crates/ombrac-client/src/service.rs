@@ -197,11 +197,7 @@ where
 
         let device = {
             let mut builder = tun_rs::DeviceBuilder::new();
-            builder = builder.mtu(
-                config
-                    .tun_mtu
-                    .unwrap_or(1500),
-            );
+            builder = builder.mtu(config.tun_mtu.unwrap_or(1500));
             if let Some(ip_str) = &config.tun_ipv4 {
                 let ip = Ipv4Net::from_str(ip_str).unwrap();
                 builder = builder.ipv4(ip.addr(), ip.netmask(), None);

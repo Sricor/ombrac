@@ -40,10 +40,10 @@ mod fakedns {
     };
     use ipnet::Ipv4Net;
     use moka::future::Cache;
-    use ombrac_macros::{info, warn};
+    use ombrac_macros::{debug, warn};
 
-    const DNS_RESPONSE_TTL: u32 = 25;
-    const CACHE_TTL: Duration = Duration::from_secs(DNS_RESPONSE_TTL as u64 + 5);
+    const DNS_RESPONSE_TTL: u32 = 10;
+    const CACHE_TTL: Duration = Duration::from_secs(DNS_RESPONSE_TTL as u64);
 
     #[derive(Clone)]
     pub struct FakeDns {
@@ -57,47 +57,30 @@ mod fakedns {
         pub fn new(ip_net: Ipv4Net) -> Self {
             Self {
                 ip_net,
-                // 从 1 开始，跳过网络地址
                 next_ip_offset: Arc::new(AtomicU32::new(1)),
                 domain_to_ip: Cache::builder()
                     .max_capacity(10_000)
-                    .time_to_live(CACHE_TTL)
+                    .time_to_idle(CACHE_TTL)
                     .build(),
                 ip_to_domain: Cache::builder()
                     .max_capacity(10_000)
-                    .time_to_live(CACHE_TTL)
+                    .time_to_idle(CACHE_TTL)
                     .build(),
             }
         }
 
-        // --- FIXED ---
-        // 修正了 get_next_ip 函数中的潜在 Bug
         fn get_next_ip(&self) -> Option<Ipv4Addr> {
             let network = self.ip_net.network();
-            let broadcast = self.ip_net.broadcast();
             let num_hosts = self.ip_net.hosts().count();
             if num_hosts == 0 {
                 return None;
             }
 
-            // 循环以确保我们不会意外地分配网络地址或广播地址
-            for _ in 0..num_hosts {
-                let offset = self.next_ip_offset.fetch_add(1, Ordering::Relaxed);
+            let offset = self.next_ip_offset.fetch_add(1, Ordering::Relaxed);
+            let ip_offset = (offset as u64 % num_hosts as u64) + 1;
 
-                // 使用环形方式获取偏移量，确保它在有效主机范围内
-                let ip_offset = (offset as u64 % num_hosts as u64) + 1;
-
-                let next_ip_as_u32 = u32::from(network).wrapping_add(ip_offset as u32);
-                let next_ip = Ipv4Addr::from(next_ip_as_u32);
-
-                // 确保 IP 地址有效
-                if next_ip != network && next_ip != broadcast {
-                    return Some(next_ip);
-                }
-            }
-            // 如果在一次完整循环后仍未找到可用 IP，则返回 None
-            warn!("No available fake IP addresses left in the pool.");
-            None
+            let next_ip_as_u32 = u32::from(network).wrapping_add(ip_offset as u32);
+            Some(Ipv4Addr::from(next_ip_as_u32))
         }
 
         pub async fn handle_dns_query(&self, query_bytes: &[u8]) -> Option<Message> {
@@ -129,7 +112,7 @@ mod fakedns {
                 let new_ip = self.get_next_ip()?;
                 self.domain_to_ip.insert(domain_name.clone(), new_ip).await;
                 self.ip_to_domain.insert(new_ip, domain_name.clone()).await;
-                info!("FakeDNS: Mapped {} -> {}", domain_name, new_ip);
+                debug!("FakeDNS: Mapped {} -> {}", domain_name, new_ip);
                 new_ip
             };
 
@@ -168,8 +151,6 @@ pub struct TunConfig {
 impl Default for TunConfig {
     fn default() -> Self {
         Self {
-            // --- FIXED ---
-            // 使用 .expect() 提供更清晰的错误信息
             fakedns_cidr: "198.18.0.0/16"
                 .parse()
                 .expect("Hardcoded FakeDNS CIDR is invalid"),
@@ -336,10 +317,10 @@ where
 
                     let self_clone = self.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = self_clone.handle_tcp_stream(stream).await
-                            && err.kind() != io::ErrorKind::BrokenPipe && err.kind() != io::ErrorKind::ConnectionReset {
-                                error!("Error handling TCP stream: {}", err);
-                            }
+                        let addr = stream.remote_addr();
+                        if let Err(err) = self_clone.handle_tcp_stream(stream).await {
+                            error!("Error handling {} TCP stream: {}", addr, err);
+                        }
                     });
                 }
             }
@@ -347,6 +328,9 @@ where
         debug!("TCP connection processing task has finished.");
     }
 
+    // 目前 TCP 有两个问题
+    // 1. 连接没有断开，可能是底层网络栈没有断开，大量连接停滞（暂不处理）
+    // 2. 如果在 fakedns 里没有找到对应的域名，同时ip又是fakeip池里的，也不要尝试连接
     async fn handle_tcp_stream(&self, mut stream: TcpStream) -> io::Result<()> {
         let local_addr = stream.local_addr();
         let remote_addr = stream.remote_addr();
@@ -367,14 +351,12 @@ where
         let (up, down) =
             ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
-            "TCP Close: {} -> {}. Sent: {}, Recv: {}",
-            local_addr, remote_addr, up, down
+            "TCP Close: {} -> ({}){}. Sent: {}, Recv: {}",
+            local_addr, remote_addr, target_addr, up, down
         );
         Ok(())
     }
 
-    // --- REFACTORED ---
-    // 将 process_udp_packets 拆分为多个函数
     async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
         let (mut reader, mut writer) = udp_socket.split();
         let sessions: Arc<DashMap<SocketAddr, mpsc::Sender<(Bytes, Address)>>> =
@@ -444,30 +426,30 @@ where
         let initial_remote_addr = packet.remote_addr;
         let data: Bytes = packet.data.into_bytes();
 
-        let remote_addr: Address =
-            if let Some(domain) = self.fakedns.get_domain_by_ip(&initial_remote_addr.ip()).await {
-                debug!(
-                    "UDP New (FakeDNS): {} -> {} ({})",
-                    local_addr, initial_remote_addr, domain
-                );
-                Address::from((domain.to_utf8(), initial_remote_addr.port()))
-            } else {
-                debug!("UDP New: {} -> {}", local_addr, initial_remote_addr);
-                Address::from(initial_remote_addr)
-            };
+        let remote_addr: Address = if let Some(domain) = self
+            .fakedns
+            .get_domain_by_ip(&initial_remote_addr.ip())
+            .await
+        {
+            debug!(
+                "UDP New (FakeDNS): {} -> {} ({})",
+                local_addr, initial_remote_addr, domain
+            );
+            Address::from((domain.to_utf8(), initial_remote_addr.port()))
+        } else {
+            debug!("UDP New: {} -> {}", local_addr, initial_remote_addr);
+            Address::from(initial_remote_addr)
+        };
 
         match sessions.entry(local_addr) {
             Entry::Occupied(entry) => {
                 if entry.get().send((data, remote_addr)).await.is_err() {
-                    // 通道已关闭，意味着 handle_udp_flow 任务已结束
-                    // 任务本身会清理 sessions map，这里可以安全地移除
                     entry.remove();
                 }
             }
             Entry::Vacant(entry) => {
                 let (tx, rx) = mpsc::channel(self.config.udp_session_channel_capacity);
                 if tx.send((data, remote_addr.clone())).await.is_err() {
-                    // 如果初始发送失败，则不创建新任务
                     return;
                 }
 
@@ -484,8 +466,6 @@ where
         }
     }
 
-    // --- FIXED ---
-    // 修正了 UDP 会话处理中的超时逻辑
     async fn handle_udp_flow(
         self,
         mut rx: mpsc::Receiver<(Bytes, Address)>,
@@ -531,7 +511,7 @@ where
 
                 // 空闲超时触发
                 _ = &mut idle_timeout => {
-                    info!("UDP stream {} to {} timed out due to inactivity.", local_addr, initial_remote_addr);
+                    debug!("UDP stream {} to {} timed out due to inactivity.", local_addr, initial_remote_addr);
                     break;
                 }
             }

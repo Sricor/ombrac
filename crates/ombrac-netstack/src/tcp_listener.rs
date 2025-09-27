@@ -225,17 +225,28 @@ impl TcpListener {
 
     fn handle_socket_io(socket: &mut tcp::Socket, socket_control: &mut SocketIOHandle) {
         let mut notify_read = false;
-        while socket.can_recv() && !socket_control.recv_buffer_prod.is_full() {
+        if socket.can_recv() {
             match socket.recv(|buffer| {
-                (
-                    socket_control.recv_buffer_prod.push_slice(buffer),
-                    buffer.len(),
-                )
+                let n = socket_control.recv_buffer_prod.push_slice(buffer);
+                (n, buffer.len())
             }) {
-                Ok(n) if n > 0 => notify_read = true,
-                _ => break,
+                Ok(n) => {
+                    if n > 0 {
+                        notify_read = true;
+                    }
+                }
+                Err(_) => {
+                    socket_control.shared_state.read_closed.store(true, std::sync::atomic::Ordering::Release);
+                    notify_read = true;
+                }
             }
         }
+
+        if !socket.can_recv() && socket.state() != tcp::State::Listen {
+            socket_control.shared_state.read_closed.store(true, std::sync::atomic::Ordering::Release);
+            notify_read = true;
+        }
+
         if notify_read {
             socket_control.shared_state.recv_waker.wake();
         }
@@ -262,19 +273,21 @@ impl TcpListener {
         socket_maps: &mut HashMap<smoltcp::iface::SocketHandle, SocketIOHandle>,
     ) {
         socket_maps.retain(|handle, socket_control| {
+            let socket = sockets.get_mut::<tcp::Socket>(*handle);
+
             if socket_control
                 .shared_state
                 .socket_dropped
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                sockets.remove(*handle);
-                return false;
+                socket.close();
             }
-            let socket = sockets.get_mut::<tcp::Socket>(*handle);
+
             if !socket.is_active() {
                 sockets.remove(*handle);
                 return false;
             }
+
             true
         });
     }
@@ -284,15 +297,19 @@ impl TcpListener {
         device: &mut NetstackDevice,
         mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
+        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
+
         let mut sockets = SocketSet::new(vec![]);
         let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, SocketIOHandle> = HashMap::new();
 
+        let mut housekeeping_timer = tokio::time::interval(HOUSEKEEPING_INTERVAL);
+
         loop {
             let now = smoltcp::time::Instant::now();
-            let delay = iface
+            let smoltcp_delay = iface
                 .poll_delay(now, &sockets)
                 .map(|d| d.into())
-                .unwrap_or(Duration::ZERO);
+                .unwrap_or(HOUSEKEEPING_INTERVAL);
 
             tokio::select! {
                 biased;
@@ -303,7 +320,8 @@ impl TcpListener {
                         socket_maps.insert(socket_handle, handle);
                     }
                 }
-                _ = tokio::time::sleep(delay) => {}
+                _ = tokio::time::sleep(smoltcp_delay) => {},
+                _ = housekeeping_timer.tick() => {},
             }
 
             let now = smoltcp::time::Instant::now();
