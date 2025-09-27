@@ -11,7 +11,7 @@ use ringbuf::traits::{Consumer, Observer, Producer};
 use smoltcp::iface::{Interface, PollResult, SocketSet};
 use smoltcp::socket::tcp::{CongestionControl, Socket, SocketBuffer, State};
 use smoltcp::wire::{IpCidr, IpProtocol, TcpPacket};
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Notify};
 use tokio::task::JoinHandle;
 
 use crate::buffer::BufferPool;
@@ -195,14 +195,57 @@ impl TcpConnection {
 
 impl TcpConnectionWorker {
     async fn accept_loop(&mut self, mut device: NetstackDevice) -> std::io::Result<()> {
-        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(30);
-        'main_loop: loop {
+        loop {
+            // --- STAGE 1: WORK-DRAINING ---
+            // Keep processing as long as we are making progress to avoid premature sleeping.
+            let mut work_done = true;
+            while work_done {
+                // Assume no work will be done in this iteration until proven otherwise.
+                work_done = false;
+
+                // Drain all pending inbound packets without blocking.
+                while let Ok(packet) = self.inbound.try_recv() {
+                    if let Err(e) = self.process_inbound_frame(packet).await {
+                        error!("Error processing inbound frame: {}", e);
+                    }
+                    work_done = true;
+                }
+
+                // Poll smoltcp for any network events (e.g., received ACKs, timer expirations).
+                let now = smoltcp::time::Instant::now();
+                if self.iface.poll(now, &mut device, &mut self.sockets) != PollResult::None {
+                    work_done = true;
+                }
+
+                // Handle IO for all active sockets (app data -> smoltcp, smoltcp -> app).
+                for (socket_handle, socket_control) in self.socket_maps.iter_mut() {
+                    let socket = self.sockets.get_mut::<Socket>(*socket_handle);
+                    if Self::handle_socket_io(socket, socket_control) {
+                        work_done = true;
+                    }
+                }
+
+                // Prune any closed/aborted sockets.
+                if Self::prune_sockets(&mut self.sockets, &mut self.socket_maps) {
+                    work_done = true;
+                }
+
+                // Poll smoltcp again, as the IO and pruning might have changed its state.
+                let now = smoltcp::time::Instant::now();
+                if self.iface.poll(now, &mut device, &mut self.sockets) != PollResult::None {
+                    work_done = true;
+                }
+            }
+
+            // --- STAGE 2: IDLE / WAITING ---
+            // If we are here, it means the work-draining loop completed a full iteration
+            // without any work being done. We are now idle and can safely wait for the next event.
+
             let now = smoltcp::time::Instant::now();
             let smoltcp_delay = self
                 .iface
                 .poll_delay(now, &self.sockets)
-                .map(|d| d.into())
-                .unwrap_or(HOUSEKEEPING_INTERVAL);
+                .map(|d| d.into());
 
             tokio::select! {
                 biased;
@@ -211,51 +254,40 @@ impl TcpConnectionWorker {
                     return Ok(());
                 }
 
+                // Wait for a new inbound packet to arrive.
                 maybe_packet = self.inbound.recv() => {
                     match maybe_packet {
                         Some(packet) => {
                             if let Err(e) = self.process_inbound_frame(packet).await {
                                 error!("Error processing inbound frame: {}", e);
                             }
-
-                            while let Ok(packet) = self.inbound.try_recv() {
-                                if let Err(e) = self.process_inbound_frame(packet).await {
-                                    error!("Error processing inbound frame: {}", e);
-                                }
-                            }
+                            // After processing, continue to the top of 'main_loop to enter the work-draining phase.
                         },
-                        None => return Ok(()),
+                        None => return Ok(()), // Channel closed, exit worker.
                     }
                 },
-                _ = self.notifier.notified() => {},
-                _ = tokio::time::sleep(smoltcp_delay) => {},
-            }
 
-            let now = smoltcp::time::Instant::now();
-            let mut state_changed = false;
+                // Wait for a notification from a TcpStream (e.g., app wrote data).
+                _ = self.notifier.notified() => {
+                    // Notification received. No action needed here.
+                    // We'll simply loop back to the top and enter the work-draining phase.
+                },
 
-            if self.iface.poll(now, &mut device, &mut self.sockets)
-                == PollResult::SocketStateChanged
-            {
-                state_changed = true;
-            }
-
-            for (socket_handle, socket_control) in self.socket_maps.iter_mut() {
-                let socket = self.sockets.get_mut::<Socket>(*socket_handle);
-                Self::handle_socket_io(socket, socket_control);
-            }
-
-            Self::prune_sockets(&mut self.sockets, &mut self.socket_maps);
-
-            let now = smoltcp::time::Instant::now();
-            if self.iface.poll(now, &mut device, &mut self.sockets)
-                == PollResult::SocketStateChanged
-            {
-                state_changed = true;
-            }
-
-            if state_changed {
-                continue 'main_loop;
+                // Wait for smoltcp's timer to expire (e.g., for retransmissions).
+                _ = async {
+                    match smoltcp_delay {
+                        // If there's a specific delay, we sleep for that duration.
+                        Some(delay) if delay > Duration::ZERO => tokio::time::sleep(delay).await,
+                        // In all other cases (no timer, or timer is for "now"),
+                        // we wait on a future that never completes. This effectively
+                        // disables this select arm and forces the select to wait for
+                        // one of the other arms (shutdown, inbound, notifier).
+                        _ => std::future::pending().await,
+                    }
+                } => {
+                    // Timer expired. No action needed here.
+                    // We'll simply loop back to the top and the work-draining phase will poll smoltcp.
+                },
             }
         }
     }
@@ -334,8 +366,10 @@ impl TcpConnectionWorker {
         Ok(())
     }
 
-    fn handle_socket_io(socket: &mut Socket, socket_control: &mut SocketIOHandle) {
+    fn handle_socket_io(socket: &mut Socket, socket_control: &mut SocketIOHandle) -> bool {
+        let mut did_work = false;
         let mut notify_read = false;
+
         if socket.can_recv() {
             match socket.recv(|buffer| {
                 let n = socket_control.recv_buffer_prod.push_slice(buffer);
@@ -344,6 +378,7 @@ impl TcpConnectionWorker {
                 Ok(n) => {
                     if n > 0 {
                         notify_read = true;
+                        did_work = true;
                     }
                 }
                 Err(_e) => {
@@ -353,16 +388,19 @@ impl TcpConnectionWorker {
                         .read_closed
                         .store(true, Ordering::Release);
                     notify_read = true;
+                    did_work = true;
                 }
             }
         }
 
-        if !socket.is_open() {
+        // Check if the socket was closed by the remote and we haven't notified the stream yet.
+        if !socket.is_open() && !socket_control.shared_state.read_closed.load(Ordering::Acquire) {
             socket_control
                 .shared_state
                 .read_closed
                 .store(true, Ordering::Release);
             notify_read = true;
+            did_work = true;
         }
 
         if notify_read {
@@ -375,19 +413,25 @@ impl TcpConnectionWorker {
                 let n = socket_control.send_buffer_cons.pop_slice(buffer);
                 (n, buffer.len())
             }) {
-                Ok(n) if n > 0 => notify_write = true,
-                _ => break,
+                Ok(n) if n > 0 => {
+                    notify_write = true;
+                    did_work = true;
+                }
+                _ => break, // Can't send more, or error.
             }
         }
         if notify_write {
             socket_control.shared_state.send_waker.wake();
         }
+
+        did_work
     }
 
     fn prune_sockets(
         sockets: &mut SocketSet,
         socket_maps: &mut HashMap<smoltcp::iface::SocketHandle, SocketIOHandle>,
-    ) {
+    ) -> bool {
+        let initial_len = socket_maps.len();
         socket_maps.retain(|handle, socket_control| {
             let socket = sockets.get_mut::<Socket>(*handle);
 
@@ -406,6 +450,7 @@ impl TcpConnectionWorker {
 
             true
         });
+        initial_len != socket_maps.len()
     }
 }
 
