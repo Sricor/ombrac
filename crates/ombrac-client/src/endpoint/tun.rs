@@ -342,12 +342,13 @@ where
                 Address::from((domain.to_utf8(), remote_addr.port()))
             } else {
                 if let SocketAddr::V4(addr) = remote_addr
-                    && self.config.fakedns_cidr.contains(addr.ip()) {
-                        return Err(io::Error::other(format!(
-                            "DNS Cache Miss: {} -> {}",
-                            local_addr, remote_addr
-                        )));
-                    }
+                    && self.config.fakedns_cidr.contains(addr.ip())
+                {
+                    return Err(io::Error::other(format!(
+                        "DNS Cache Miss: {} -> {}",
+                        local_addr, remote_addr
+                    )));
+                }
 
                 Address::from(remote_addr)
             };
