@@ -118,8 +118,8 @@ impl SplitRead {
 
             Some(UdpPacket {
                 data: Packet::new(payload_bytes),
-                src_addr: src_addr,
-                dst_addr: dst_addr,
+                src_addr,
+                dst_addr,
             })
         })
     }

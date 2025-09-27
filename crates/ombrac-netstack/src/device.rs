@@ -4,9 +4,8 @@ use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;
 
+use crate::buffer::BufferPool;
 use crate::stack::{NetStackConfig, Packet};
-use crate::warn;
-use crate::{buffer::BufferPool, stack::IfaceEvent};
 
 pub struct NetstackDevice {
     rx_sender: mpsc::Sender<Packet>,
@@ -15,14 +14,12 @@ pub struct NetstackDevice {
     tx_sender: mpsc::Sender<Packet>,
     capabilities: DeviceCapabilities,
 
-    iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
     buffer_pool: Arc<BufferPool>,
 }
 
 impl NetstackDevice {
     pub fn new(
         tx_sender: mpsc::Sender<Packet>,
-        iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
         buffer_pool: Arc<BufferPool>,
         config: &NetStackConfig,
     ) -> Self {
@@ -37,7 +34,6 @@ impl NetstackDevice {
             rx_queue,
             tx_sender,
             capabilities,
-            iface_notifier,
             buffer_pool,
         }
     }
@@ -52,19 +48,18 @@ impl Device for NetstackDevice {
     type TxToken<'a> = TxTokenImpl<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if let (Ok(packet), Ok(permit)) = (self.rx_queue.try_recv(), self.tx_sender.try_reserve()) {
-            let rx_token = RxTokenImpl { packet };
-            let tx_token = TxTokenImpl {
-                tx_sender: permit,
-                buffer_pool: self.buffer_pool.clone(),
-            };
-            if let Err(e) = self.iface_notifier.try_send(IfaceEvent::DeviceReady) {
-                warn!("Failed to notify iface event: {}", e)
-            };
-            return Some((rx_token, tx_token));
+        match self.rx_queue.try_recv() {
+            Ok(packet) => {
+                let tx_permit = self.tx_sender.try_reserve().ok()?;
+                let rx_token = RxTokenImpl { packet };
+                let tx_token = TxTokenImpl {
+                    tx_sender: tx_permit,
+                    buffer_pool: self.buffer_pool.clone(),
+                };
+                Some((rx_token, tx_token))
+            }
+            Err(_) => None,
         }
-
-        None
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {

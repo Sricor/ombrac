@@ -5,11 +5,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use smoltcp::socket::tcp::Socket;
 use smoltcp::wire::{IpProtocol, IpVersion, Ipv4Address, Ipv4Packet, Ipv6Address, Ipv6Packet};
 use tokio::sync::mpsc;
 
-use crate::tcp::{SocketIOHandle, TcpConnection};
+use crate::tcp::TcpConnection;
 use crate::{buffer::BufferPool, udp::UdpTunnel};
 use crate::{debug, error};
 
@@ -67,6 +66,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> IpPacket<&'a T> {
 pub struct NetStackConfig {
     pub mtu: usize,
     pub channel_size: usize,
+    pub number_workers: usize,
 
     pub tcp_send_buffer_size: usize,
     pub tcp_recv_buffer_size: usize,
@@ -90,6 +90,7 @@ impl Default for NetStackConfig {
         Self {
             mtu: 1500,
             channel_size: 1024,
+            number_workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
             tcp_send_buffer_size: 16 * 1024,
             tcp_recv_buffer_size: 16 * 1024,
             buffer_pool_size: 32,
@@ -98,21 +99,12 @@ impl Default for NetStackConfig {
             ipv4_prefix_len: 24,
             ipv6_addr: DEFAULT_IPV6_ADDR,
             ipv6_prefix_len: 64,
-
             tcp_timeout: Duration::from_secs(60),
             tcp_keep_alive: Duration::from_secs(28),
             packet_batch_size: 32,
             ip_ttl: 64,
         }
     }
-}
-
-pub(crate) enum IfaceEvent<'a> {
-    Icmp,
-    TcpStream(Box<(Socket<'a>, SocketIOHandle)>),
-    TcpSocketReady,
-    TcpSocketClosed,
-    DeviceReady,
 }
 
 pub struct NetStack {
