@@ -358,7 +358,7 @@ where
             ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
             "{} Connect {} ({}). Sent: {}, Recv: {}",
-            local_addr, target_addr, remote_addr, up, down
+            local_addr, remote_addr, target_addr, up, down
         );
         Ok(())
     }
