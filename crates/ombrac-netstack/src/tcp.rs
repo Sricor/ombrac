@@ -151,7 +151,7 @@ impl TcpConnection {
                             Err(_) => 0,
                         };
 
-                        if let Err(_) = worker_senders[worker_index].send(packet).await {
+                        if worker_senders[worker_index].send(packet).await.is_err() {
                             error!(
                                 "[Dispatcher] Failed to send packet to worker {}, channel closed.",
                                 worker_index
@@ -263,10 +263,12 @@ impl TcpConnectionWorker {
     async fn process_inbound_frame(&mut self, frame: Packet) -> std::io::Result<()> {
         if let Ok(ip_packet) = IpPacket::new_checked(frame.data())
             && ip_packet.protocol() == IpProtocol::Tcp
-                && let Ok(tcp_packet) = TcpPacket::new_checked(ip_packet.payload())
-                    && tcp_packet.syn() && !tcp_packet.ack() {
-                        self.accept_new_connection(&ip_packet, &tcp_packet)?;
-                    }
+            && let Ok(tcp_packet) = TcpPacket::new_checked(ip_packet.payload())
+            && tcp_packet.syn()
+            && !tcp_packet.ack()
+        {
+            self.accept_new_connection(&ip_packet, &tcp_packet)?;
+        }
 
         self.device_injector
             .try_send(frame)
