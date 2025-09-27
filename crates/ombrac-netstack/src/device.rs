@@ -4,8 +4,9 @@ use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::{Config, warn};
-use crate::{Packet, buffer::BufferPool, stack::IfaceEvent};
+use crate::stack::{NetStackConfig, Packet};
+use crate::warn;
+use crate::{buffer::BufferPool, stack::IfaceEvent};
 
 pub struct NetstackDevice {
     rx_sender: mpsc::Sender<Packet>,
@@ -23,7 +24,7 @@ impl NetstackDevice {
         tx_sender: mpsc::Sender<Packet>,
         iface_notifier: mpsc::Sender<IfaceEvent<'static>>,
         buffer_pool: Arc<BufferPool>,
-        config: &Config,
+        config: &NetStackConfig,
     ) -> Self {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.max_transmission_unit = config.mtu;

@@ -5,24 +5,25 @@ use etherparse::PacketBuilder;
 use tokio::sync::mpsc;
 
 use crate::buffer::BufferPool;
-use crate::{Config, Packet, packet::IpPacket};
+use crate::stack::IpPacket;
+use crate::stack::{NetStackConfig, Packet};
 use crate::{error, trace};
 
 pub struct UdpPacket {
     pub data: Packet,
-    pub local_addr: SocketAddr,
-    pub remote_addr: SocketAddr,
+    pub src_addr: SocketAddr,
+    pub dst_addr: SocketAddr,
 }
 
 impl<T> From<(T, SocketAddr, SocketAddr)> for UdpPacket
 where
     T: Into<Packet>,
 {
-    fn from((data, local_addr, remote_addr): (T, SocketAddr, SocketAddr)) -> Self {
+    fn from((data, src_addr, dst_addr): (T, SocketAddr, SocketAddr)) -> Self {
         UdpPacket {
             data: data.into(),
-            local_addr,
-            remote_addr,
+            src_addr,
+            dst_addr,
         }
     }
 }
@@ -33,16 +34,16 @@ impl UdpPacket {
     }
 }
 
-pub struct UdpSocket {
+pub struct UdpTunnel {
     inbound: mpsc::Receiver<Packet>,
     outbound: mpsc::Sender<Packet>,
     buffer_pool: Arc<BufferPool>,
-    config: Arc<Config>,
+    config: Arc<NetStackConfig>,
 }
 
-impl UdpSocket {
+impl UdpTunnel {
     pub fn new(
-        config: Arc<Config>,
+        config: Arc<NetStackConfig>,
         inbound: mpsc::Receiver<Packet>,
         outbound: mpsc::Sender<Packet>,
         buffer_pool: Arc<BufferPool>,
@@ -117,8 +118,8 @@ impl SplitRead {
 
             Some(UdpPacket {
                 data: Packet::new(payload_bytes),
-                local_addr: src_addr,
-                remote_addr: dst_addr,
+                src_addr: src_addr,
+                dst_addr: dst_addr,
             })
         })
     }
@@ -126,19 +127,15 @@ impl SplitRead {
 
 #[derive(Clone)]
 pub struct SplitWrite {
-    config: Arc<Config>,
+    config: Arc<NetStackConfig>,
     send: mpsc::Sender<Packet>,
     buffer_pool: Arc<BufferPool>,
 }
 
 impl SplitWrite {
     pub async fn send(&mut self, packet: UdpPacket) -> Result<(), std::io::Error> {
-        if packet.data.data().is_empty() {
-            return Ok(());
-        }
-
         let ttl = self.config.ip_ttl;
-        let builder = match (packet.local_addr, packet.remote_addr) {
+        let builder = match (packet.src_addr, packet.dst_addr) {
             (SocketAddr::V4(src), SocketAddr::V4(dst)) => {
                 PacketBuilder::ipv4(src.ip().octets(), dst.ip().octets(), ttl)
                     .udp(src.port(), dst.port())

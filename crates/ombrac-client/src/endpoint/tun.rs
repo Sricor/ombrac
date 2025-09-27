@@ -12,6 +12,7 @@ use futures::{
     {SinkExt, StreamExt},
 };
 use ipnet::Ipv4Net;
+use ombrac_netstack::stack::{StackSplitSink, StackSplitStream};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tun_rs::{
@@ -21,7 +22,11 @@ use tun_rs::{
 
 use ombrac::protocol::Address;
 use ombrac_macros::{debug, error, info};
-use ombrac_netstack::*;
+use ombrac_netstack::{
+    stack::{NetStack, NetStackConfig, Packet},
+    tcp::{TcpConnection, TcpStream},
+    udp::{SplitWrite, UdpPacket, UdpTunnel},
+};
 use ombrac_transport::{Connection, Initiator};
 
 pub use crate::client::Client;
@@ -106,7 +111,7 @@ mod fakedns {
             let fake_ip = if let Some(ip) = self.domain_to_ip.get(domain_name).await {
                 ip
             } else {
-                let new_ip = self.get_ip_for_domain(&domain_name)?;
+                let new_ip = self.get_ip_for_domain(domain_name)?;
                 self.domain_to_ip.insert(domain_name.clone(), new_ip).await;
                 self.ip_to_domain.insert(new_ip, domain_name.clone()).await;
                 debug!(
@@ -200,7 +205,7 @@ where
         let framed = DeviceFramed::new(dev, BytesCodec::new());
         let (tun_sink, tun_stream) = framed.split::<bytes::Bytes>();
 
-        let (stack, tcp_listener, udp_socket) = NetStack::new(Config::default());
+        let (stack, tcp_listener, udp_socket) = NetStack::new(NetStackConfig::default());
         let (stack_sink, stack_stream) = stack.split();
 
         let shutdown_token = CancellationToken::new();
@@ -302,7 +307,7 @@ where
 
     async fn process_tcp_connections(
         self,
-        mut tcp_listener: TcpListener,
+        mut tcp_listener: TcpConnection,
         token: CancellationToken,
     ) {
         loop {
@@ -332,29 +337,32 @@ where
         let local_addr = stream.local_addr();
         let remote_addr = stream.remote_addr();
 
-        let target_addr = if let Some(domain) =
-            self.fakedns.get_domain_by_ip(&remote_addr.ip()).await
-        {
-            Address::from((domain.to_utf8(), remote_addr.port()))
-        } else {
-            warn!(
-                "TCP Reject (Cache Miss): {} -> {}. Closing connection to force client re-resolution.",
-                local_addr, remote_addr
-            );
-            Address::from(remote_addr)
-        };
+        let target_addr =
+            if let Some(domain) = self.fakedns.get_domain_by_ip(&remote_addr.ip()).await {
+                Address::from((domain.to_utf8(), remote_addr.port()))
+            } else {
+                if let SocketAddr::V4(addr) = remote_addr
+                    && self.config.fakedns_cidr.contains(addr.ip()) {
+                        return Err(io::Error::other(format!(
+                            "DNS Cache Miss: {} -> {}",
+                            local_addr, remote_addr
+                        )));
+                    }
+
+                Address::from(remote_addr)
+            };
 
         let mut remote_stream = self.client.open_bidirectional(target_addr.clone()).await?;
         let (up, down) =
             ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
         info!(
-            "TCP Close: {} -> ({}){}. Sent: {}, Recv: {}",
-            local_addr, remote_addr, target_addr, up, down
+            "{} Connect {} ({}). Sent: {}, Recv: {}",
+            local_addr, target_addr, remote_addr, up, down
         );
         Ok(())
     }
 
-    async fn process_udp_packets(self, udp_socket: UdpSocket, token: CancellationToken) {
+    async fn process_udp_packets(self, udp_socket: UdpTunnel, token: CancellationToken) {
         let (mut reader, mut writer) = udp_socket.split();
         let sessions: Arc<DashMap<SocketAddr, mpsc::Sender<(Bytes, Address)>>> =
             Arc::new(DashMap::new());
@@ -379,7 +387,7 @@ where
                     };
 
                     // 首先处理 DNS 查询
-                    if packet.remote_addr.port() == 53 {
+                    if packet.dst_addr.port() == 53 {
                         self.handle_dns_packet(packet, &mut writer).await;
                         continue;
                     }
@@ -399,8 +407,8 @@ where
                 Ok(response_bytes) => {
                     let dns_response_packet = UdpPacket {
                         data: Packet::new(response_bytes),
-                        local_addr: packet.remote_addr,
-                        remote_addr: packet.local_addr,
+                        src_addr: packet.dst_addr,
+                        dst_addr: packet.src_addr,
                     };
                     if let Err(e) = writer.send(dns_response_packet).await {
                         error!("Failed to send DNS response to TUN stack: {}", e);
@@ -419,8 +427,8 @@ where
         sessions: &Arc<DashMap<SocketAddr, mpsc::Sender<(Bytes, Address)>>>,
         response_tx: mpsc::Sender<UdpPacket>,
     ) {
-        let local_addr = packet.local_addr;
-        let initial_remote_addr = packet.remote_addr;
+        let local_addr = packet.src_addr;
+        let initial_remote_addr = packet.dst_addr;
         let data: Bytes = packet.data.into_bytes();
 
         let remote_addr: Address = if let Some(domain) = self
@@ -494,8 +502,8 @@ where
                 Some((data, _from_addr)) = udp_session.recv_from() => {
                     let response_packet = UdpPacket {
                         data: Packet::new(data),
-                        local_addr: initial_remote_addr,
-                        remote_addr: local_addr,
+                        src_addr: initial_remote_addr,
+                        dst_addr: local_addr,
                     };
 
                     if response_tx.send(response_packet).await.is_err() {
