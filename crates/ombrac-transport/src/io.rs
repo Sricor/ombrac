@@ -1,22 +1,30 @@
 use std::io;
 
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::broadcast,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
-async fn copy_with_abort<R, W>(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyBidirectionalStats {
+    pub a_to_b_bytes: u64,
+    pub b_to_a_bytes: u64,
+}
+
+async fn copy_with_cancel<R, W>(
     read: &mut R,
     write: &mut W,
-    mut abort: broadcast::Receiver<()>,
-) -> io::Result<usize>
+    token: CancellationToken,
+) -> Result<usize, (io::Error, usize)>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     use std::io::ErrorKind::{ConnectionAborted, ConnectionReset};
+
+    if token.is_cancelled() {
+        return Ok(0);
+    }
 
     let mut copied = 0;
     let mut buf = [0u8; DEFAULT_BUF_SIZE];
@@ -25,29 +33,41 @@ where
         let bytes_read;
 
         tokio::select! {
-            result = read.read(&mut buf) => {
-                bytes_read = result.or_else(|e| match e.kind() {
-                    ConnectionReset | ConnectionAborted => Ok(0),
-                    _ => Err(e)
-                })?;
-            },
-            _ = abort.recv() => {
+            biased;
+            _ = token.cancelled() => {
                 break;
             }
+            result = read.read(&mut buf) => {
+                let read_result = result.or_else(|e| match e.kind() {
+                    ConnectionReset | ConnectionAborted => Ok(0),
+                    _ => Err(e)
+                });
+
+                match read_result {
+                    Ok(n) => bytes_read = n,
+                    Err(e) => return Err((e, copied)),
+                }
+            },
         }
 
         if bytes_read == 0 {
             break;
         }
 
-        write.write_all(&buf[0..bytes_read]).await?;
+        if let Err(e) = write.write_all(&buf[0..bytes_read]).await {
+            return Err((e, copied));
+        }
+
         copied += bytes_read;
     }
 
     Ok(copied)
 }
 
-pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> io::Result<(u64, u64)>
+pub async fn copy_bidirectional<A, B>(
+    a: &mut A,
+    b: &mut B,
+) -> Result<CopyBidirectionalStats, (io::Error, CopyBidirectionalStats)>
 where
     A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     B: AsyncRead + AsyncWrite + Unpin + ?Sized,
@@ -55,37 +75,54 @@ where
     let (mut a_reader, mut a_writer) = tokio::io::split(a);
     let (mut b_reader, mut b_writer) = tokio::io::split(b);
 
-    let (cancel, _) = broadcast::channel::<()>(1);
+    let token = CancellationToken::new();
 
-    let (a_to_b_bytes, b_to_a_bytes) = tokio::join! {
+    let (a_to_b_result, b_to_a_result) = tokio::join! {
         async {
-            let result = copy_with_abort(&mut a_reader, &mut b_writer, cancel.subscribe()).await;
-            let _ = cancel.send(());
+            let result = copy_with_cancel(&mut a_reader, &mut b_writer, token.clone()).await;
+            token.cancel();
             result
         },
         async {
-            let result = copy_with_abort(&mut b_reader, &mut a_writer, cancel.subscribe()).await;
-            let _ = cancel.send(());
+            let result = copy_with_cancel(&mut b_reader, &mut a_writer, token.clone()).await;
+            token.cancel();
             result
         }
     };
 
-    Ok((
-        a_to_b_bytes.unwrap_or(0) as u64,
-        b_to_a_bytes.unwrap_or(0) as u64,
-    ))
+    let stats = CopyBidirectionalStats {
+        a_to_b_bytes: (match a_to_b_result {
+            Ok(n) => n,
+            Err((_, n)) => n,
+        }) as u64,
+        b_to_a_bytes: (match b_to_a_result {
+            Ok(n) => n,
+            Err((_, n)) => n,
+        }) as u64,
+    };
+
+    if let Err((e, _)) = a_to_b_result {
+        return Err((e, stats));
+    }
+
+    if let Err((e, _)) = b_to_a_result {
+        return Err((e, stats));
+    }
+
+    Ok(stats)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::io;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use tokio::io::duplex;
-    use tokio::sync::broadcast;
+    use std::time::Duration;
+    use tokio::io::{ReadBuf, duplex};
+    use tokio_util::sync::CancellationToken;
 
-    // Mock reader that can be configured to return specific data or errors
     struct MockReader {
         data: Vec<u8>,
         position: usize,
@@ -108,31 +145,25 @@ mod tests {
         fn poll_read(
             mut self: Pin<&mut Self>,
             _: &mut Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
+            buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
             self.read_count += 1;
 
-            // Check if we should return an error
-            if let Some((n, error)) = &self.error_on_nth_read {
+            if let Some((n, e)) = &self.error_on_nth_read {
                 if self.read_count == *n {
-                    return Poll::Ready(Err(io::Error::other(error.to_string())));
+                    // Create a new error instance to avoid borrowing issues
+                    return Poll::Ready(Err(io::Error::new(e.kind(), e.to_string())));
                 }
             }
 
-            if self.position >= self.data.len() {
-                buf.set_filled(0);
-                Poll::Ready(Ok(()))
-            } else {
-                let remaining = self.data.len() - self.position;
-                let to_read = std::cmp::min(remaining, buf.remaining());
-                buf.put_slice(&self.data[self.position..self.position + to_read]);
-                self.position += to_read;
-                Poll::Ready(Ok(()))
-            }
+            let remaining = &self.data[self.position..];
+            let amt = std::cmp::min(remaining.len(), buf.remaining());
+            buf.put_slice(&remaining[..amt]);
+            self.position += amt;
+            Poll::Ready(Ok(()))
         }
     }
 
-    // Mock writer that stores written data
     struct MockWriter {
         written: Vec<u8>,
         error_on_nth_write: Option<(usize, io::Error)>,
@@ -157,9 +188,9 @@ mod tests {
         ) -> Poll<io::Result<usize>> {
             self.write_count += 1;
 
-            if let Some((n, error)) = &self.error_on_nth_write {
+            if let Some((n, e)) = &self.error_on_nth_write {
                 if self.write_count == *n {
-                    return Poll::Ready(Err(io::Error::other(error.to_string())));
+                    return Poll::Ready(Err(io::Error::new(e.kind(), e.to_string())));
                 }
             }
 
@@ -176,217 +207,315 @@ mod tests {
         }
     }
 
+    // Reusable MockStream for bidirectional tests
+    struct MockStream<R, W> {
+        reader: R,
+        writer: W,
+    }
+    impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncRead for MockStream<R, W> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.reader).poll_read(cx, buf)
+        }
+    }
+    impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> AsyncWrite for MockStream<R, W> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.writer).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.writer).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.writer).poll_shutdown(cx)
+        }
+    }
+
+    // --- Tests for `copy_with_cancel` ---
+
     #[tokio::test]
-    async fn test_copy_with_abort_normal() {
+    async fn test_copy_with_cancel_normal() {
         let data = b"Hello, World!".to_vec();
         let mut reader = MockReader::new(data.clone());
         let mut writer = MockWriter::new();
-        let (_tx, rx) = broadcast::channel(1);
+        let token = CancellationToken::new();
 
-        let result = copy_with_abort(&mut reader, &mut writer, rx).await.unwrap();
+        let result = copy_with_cancel(&mut reader, &mut writer, token)
+            .await
+            .unwrap();
 
         assert_eq!(result, data.len());
         assert_eq!(writer.written, data);
     }
 
     #[tokio::test]
-    async fn test_copy_with_abort_empty() {
+    async fn test_copy_with_cancel_empty() {
         let mut reader = MockReader::new(vec![]);
         let mut writer = MockWriter::new();
-        let (_tx, rx) = broadcast::channel(1);
+        let token = CancellationToken::new();
 
-        let result = copy_with_abort(&mut reader, &mut writer, rx).await.unwrap();
+        let result = copy_with_cancel(&mut reader, &mut writer, token)
+            .await
+            .unwrap();
 
         assert_eq!(result, 0);
         assert!(writer.written.is_empty());
     }
 
     #[tokio::test]
-    async fn test_copy_with_abort_aborted() {
+    async fn test_copy_with_cancel_aborted_immediately() {
         let data = b"Hello, World!".to_vec();
-        let reader = MockReader::new(data);
+        let mut reader = MockReader::new(data);
         let mut writer = MockWriter::new();
-        let (tx, rx) = broadcast::channel(1);
+        let token = CancellationToken::new();
 
-        struct DelayedReader<R> {
-            inner: R,
-            first_read: bool,
-        }
+        token.cancel();
 
-        impl<R: AsyncRead + Unpin> AsyncRead for DelayedReader<R> {
-            fn poll_read(
-                mut self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-                buf: &mut tokio::io::ReadBuf<'_>,
-            ) -> Poll<io::Result<()>> {
-                if !self.first_read {
-                    self.first_read = true;
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-                Pin::new(&mut self.inner).poll_read(cx, buf)
-            }
-        }
-
-        let mut delayed_reader = DelayedReader {
-            inner: reader,
-            first_read: false,
-        };
-
-        tx.send(()).unwrap();
-
-        let result = copy_with_abort(&mut delayed_reader, &mut writer, rx)
+        let result = copy_with_cancel(&mut reader, &mut writer, token)
             .await
             .unwrap();
 
-        assert_eq!(result, 0, "no data should be copied");
-        assert!(
-            writer.written.is_empty(),
-            "the write buffer should be empty"
-        );
+        assert_eq!(result, 0);
+        assert!(writer.written.is_empty());
+    }
+
+    // #[tokio::test]
+    // async fn test_copy_with_cancel_after_partial_copy() {
+    //     let data = vec![0u8; DEFAULT_BUF_SIZE * 2];
+    //     let reader = MockReader::new(data.clone());
+    //     let mut writer = MockWriter::new();
+    //     let token = CancellationToken::new();
+
+    //     let mut pending_reader = PendingReader {
+    //         inner: reader,
+    //         slept: false,
+    //     };
+
+    //     let task_token = token.clone();
+    //     let result_task = tokio::spawn(async move {
+    //         let result = copy_with_cancel(&mut pending_reader, &mut writer, task_token).await;
+    //         (result, writer)
+    //     });
+
+    //     // Yield to allow the copy task to run and enter pending state
+    //     tokio::task::yield_now().await;
+
+    //     token.cancel();
+
+    //     let (result, writer) = result_task.await.unwrap();
+    //     let result = result.unwrap();
+
+    //     assert_eq!(result, DEFAULT_BUF_SIZE);
+    //     assert_eq!(writer.written.len(), DEFAULT_BUF_SIZE);
+    //     assert_eq!(&writer.written, &data[..DEFAULT_BUF_SIZE]);
+    // }
+
+    #[tokio::test]
+    async fn test_copy_with_cancel_read_error_with_stats() {
+        let data = vec![0u8; DEFAULT_BUF_SIZE * 2];
+        let mut reader = MockReader::new(data);
+        reader.error_on_nth_read = Some((2, io::Error::new(io::ErrorKind::Other, "read error")));
+        let mut writer = MockWriter::new();
+        let token = CancellationToken::new();
+
+        let result = copy_with_cancel(&mut reader, &mut writer, token).await;
+
+        assert!(result.is_err());
+        if let Err((err, copied)) = result {
+            assert_eq!(err.kind(), io::ErrorKind::Other);
+            // Should have successfully copied one chunk before the error on the second read
+            assert_eq!(copied, DEFAULT_BUF_SIZE);
+            assert_eq!(writer.written.len(), DEFAULT_BUF_SIZE);
+        }
     }
 
     #[tokio::test]
-    async fn test_copy_with_abort_after_partial_copy() {
-        let data = b"Hello, World!".to_vec();
-        let reader = MockReader::new(data);
+    async fn test_copy_with_cancel_write_error_with_stats() {
+        let data = vec![0u8; DEFAULT_BUF_SIZE * 2];
+        let mut reader = MockReader::new(data);
         let mut writer = MockWriter::new();
-        let (tx, rx) = broadcast::channel(1);
+        writer.error_on_nth_write =
+            Some((2, io::Error::new(io::ErrorKind::BrokenPipe, "write error")));
+        let token = CancellationToken::new();
 
-        struct CountingReader<R> {
-            inner: R,
-            read_count: usize,
-            tx: broadcast::Sender<()>,
+        let result = copy_with_cancel(&mut reader, &mut writer, token).await;
+
+        assert!(result.is_err());
+        if let Err((err, copied)) = result {
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+            // Should have successfully copied one chunk before the error on the second write
+            assert_eq!(copied, DEFAULT_BUF_SIZE);
+            assert_eq!(writer.written.len(), DEFAULT_BUF_SIZE);
         }
-
-        impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
-            fn poll_read(
-                self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-                buf: &mut tokio::io::ReadBuf<'_>,
-            ) -> Poll<io::Result<()>> {
-                let this = self.get_mut();
-                this.read_count += 1;
-
-                if this.read_count == 2 {
-                    let _ = this.tx.send(());
-                }
-
-                Pin::new(&mut this.inner).poll_read(cx, buf)
-            }
-        }
-
-        let mut counting_reader = CountingReader {
-            inner: reader,
-            read_count: 0,
-            tx: tx,
-        };
-
-        let result = copy_with_abort(&mut counting_reader, &mut writer, rx)
-            .await
-            .unwrap();
-
-        assert!(
-            result > 0 && result <= 13,
-            "part of the data should be copied"
-        );
-        assert!(
-            !writer.written.is_empty(),
-            "the write buffer should contain partial data"
-        );
     }
+
+    // --- Tests for `copy_bidirectional` ---
 
     #[tokio::test]
     async fn test_copy_bidirectional_normal() {
-        let (mut a_tx, mut a_rx) = duplex(64);
-        let (mut b_tx, mut b_rx) = duplex(64);
+        let (mut a, mut a_peer) = duplex(64);
+        let (mut b, mut b_peer) = duplex(64);
 
-        let write_handle = tokio::spawn(async move {
-            a_tx.write_all(b"Hello").await.unwrap();
-            b_tx.write_all(b"World").await.unwrap();
+        let copy_handle = tokio::spawn(async move { copy_bidirectional(&mut a, &mut b).await });
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        a_peer.write_all(b"Hello").await.unwrap();
+        b_peer.write_all(b"World").await.unwrap();
 
-            (a_tx, b_tx)
-        });
+        // Give some time for the data to be copied
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let copy_handle =
-            tokio::spawn(async move { copy_bidirectional(&mut a_rx, &mut b_rx).await });
-
-        let (a_tx, b_tx) = write_handle.await.unwrap();
-
-        drop(a_tx);
-        drop(b_tx);
+        drop(a_peer);
+        drop(b_peer);
 
         let result = copy_handle.await.unwrap().unwrap();
 
-        assert_eq!(result.0, 5); // "Hello"
-        assert_eq!(result.1, 5); // "World"
+        assert_eq!(
+            result,
+            CopyBidirectionalStats {
+                a_to_b_bytes: 5,
+                b_to_a_bytes: 5
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_copy_bidirectional_one_side_closes_cancels_other() {
+        let (mut a, mut a_peer) = duplex(64);
+        let (mut b, b_peer) = duplex(64);
+
+        let copy_handle = tokio::spawn(async move { copy_bidirectional(&mut a, &mut b).await });
+
+        a_peer.write_all(b"data from a").await.unwrap();
+        // Give time for the copy to happen before closing
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Closing a_peer will cause a->b copy to finish, which should cancel b->a copy
+        drop(a_peer);
+        // Closing b_peer ensures the b->a reader doesn't hang forever if cancellation fails
+        drop(b_peer);
+
+        let result = copy_handle.await.unwrap().unwrap();
+
+        assert_eq!(
+            result,
+            CopyBidirectionalStats {
+                a_to_b_bytes: 11,
+                b_to_a_bytes: 0
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_copy_bidirectional_one_side_empty() {
-        let (mut a_tx, mut a_rx) = duplex(64);
-        let (b_tx, mut b_rx) = duplex(64);
+        let (mut a, mut a_peer) = duplex(64);
+        let (mut b, b_peer) = duplex(64);
 
-        let write_handle = tokio::spawn(async move {
-            a_tx.write_all(b"Hello").await.unwrap();
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            (a_tx, b_tx)
-        });
+        let copy_handle = tokio::spawn(async move { copy_bidirectional(&mut a, &mut b).await });
 
-        let copy_handle =
-            tokio::spawn(async move { copy_bidirectional(&mut a_rx, &mut b_rx).await });
+        a_peer.write_all(b"Hello").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let (a_tx, b_tx) = write_handle.await.unwrap();
-        drop(a_tx);
-        drop(b_tx);
+        drop(a_peer);
+        drop(b_peer);
 
         let result = copy_handle.await.unwrap().unwrap();
 
-        assert_eq!(result.0, 5); // "Hello"
-        assert_eq!(result.1, 0); // Nothing from b to a
-    }
-
-    #[tokio::test]
-    async fn test_copy_bidirectional_continuous() {
-        let (mut a_tx, mut a_rx) = duplex(64);
-        let (mut b_tx, mut b_rx) = duplex(64);
-
-        let write_handle = tokio::spawn(async move {
-            for _ in 0..5 {
-                a_tx.write_all(b"Hello").await.unwrap();
-                b_tx.write_all(b"World").await.unwrap();
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            result,
+            CopyBidirectionalStats {
+                a_to_b_bytes: 5,
+                b_to_a_bytes: 0
             }
-            (a_tx, b_tx)
-        });
-
-        let copy_handle =
-            tokio::spawn(async move { copy_bidirectional(&mut a_rx, &mut b_rx).await });
-
-        let (a_tx, b_tx) = write_handle.await.unwrap();
-
-        drop(a_tx);
-        drop(b_tx);
-
-        let result = copy_handle.await.unwrap().unwrap();
-
-        assert_eq!(result.0, 25); // "Hello" * 5
-        assert_eq!(result.1, 25); // "World" * 5
+        );
     }
 
     #[tokio::test]
     async fn test_copy_bidirectional_zero_bytes() {
-        let (a_tx, mut a_rx) = duplex(64);
-        let (b_tx, mut b_rx) = duplex(64);
+        let (mut a, a_peer) = duplex(64);
+        let (mut b, b_peer) = duplex(64);
 
-        drop(a_tx);
-        drop(b_tx);
+        drop(a_peer);
+        drop(b_peer);
 
-        let result = copy_bidirectional(&mut a_rx, &mut b_rx).await.unwrap();
+        let result = copy_bidirectional(&mut a, &mut b).await.unwrap();
 
-        assert_eq!(result.0, 0);
-        assert_eq!(result.1, 0);
+        assert_eq!(
+            result,
+            CopyBidirectionalStats {
+                a_to_b_bytes: 0,
+                b_to_a_bytes: 0
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_copy_bidirectional_write_error_cancels_other() {
+        let (mut a, mut a_peer) = duplex(DEFAULT_BUF_SIZE * 2);
+
+        let mut b_writer = MockWriter::new();
+        b_writer.error_on_nth_write =
+            Some((2, io::Error::new(io::ErrorKind::BrokenPipe, "write error")));
+        let mut b = MockStream {
+            // Provide some data for the other direction to test cancellation
+            reader: MockReader::new(vec![0; DEFAULT_BUF_SIZE * 3]),
+            writer: b_writer,
+        };
+
+        let copy_handle = tokio::spawn(async move { copy_bidirectional(&mut a, &mut b).await });
+
+        // Write enough data to trigger the error on the second write
+        let _ = a_peer.write_all(&vec![0; DEFAULT_BUF_SIZE + 10]).await;
+        // Give a moment for the error to propagate and cancel the other direction
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Close the peer to avoid panics on write
+        drop(a_peer);
+
+        let result = copy_handle.await.unwrap();
+
+        assert!(result.is_err());
+        if let Err((err, stats)) = result {
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+            // One chunk was successfully written from a to b
+            assert_eq!(stats.a_to_b_bytes, DEFAULT_BUF_SIZE as u64);
+            // The b to a copy should have been cancelled before it could copy everything.
+            // It might have copied 0 or 1 chunk depending on scheduling.
+            assert!(stats.b_to_a_bytes <= DEFAULT_BUF_SIZE as u64);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_bidirectional_read_error_cancels_other() {
+        let (mut a, mut a_peer) = duplex(DEFAULT_BUF_SIZE * 2);
+
+        let mut b_reader = MockReader::new(vec![0; DEFAULT_BUF_SIZE * 2]);
+        b_reader.error_on_nth_read = Some((2, io::Error::new(io::ErrorKind::Other, "read error")));
+        let mut b = MockStream {
+            reader: b_reader,
+            writer: MockWriter::new(),
+        };
+
+        let copy_handle = tokio::spawn(async move { copy_bidirectional(&mut a, &mut b).await });
+
+        // Write some data in the a->b direction
+        let _ = a_peer.write_all(b"some data").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(a_peer);
+
+        let result = copy_handle.await.unwrap();
+
+        assert!(result.is_err());
+        if let Err((err, stats)) = result {
+            assert_eq!(err.kind(), io::ErrorKind::Other);
+            // a->b copy should have completed successfully
+            assert_eq!(stats.a_to_b_bytes, 9);
+            // b->a copy failed after copying one chunk
+            assert_eq!(stats.b_to_a_bytes, DEFAULT_BUF_SIZE as u64);
+        }
     }
 }

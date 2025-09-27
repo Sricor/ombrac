@@ -1,7 +1,8 @@
+use std::io;
 use std::net::SocketAddr;
+use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{io, net::UdpSocket};
 
 use async_channel::{Receiver, Sender};
 use ombrac_macros::{debug, error, warn};

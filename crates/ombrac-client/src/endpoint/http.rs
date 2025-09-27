@@ -107,7 +107,7 @@ where
 
     async fn handle_connect(
         req: Request<hyper::body::Incoming>,
-        mut outbound_conn: C::Stream,
+        mut dest_stream: C::Stream,
         remote_addr: SocketAddr,
         target_addr: Address,
     ) -> HttpResult {
@@ -117,18 +117,30 @@ where
                     let mut upgraded_io = TokioIo::new(upgraded);
                     match ombrac_transport::io::copy_bidirectional(
                         &mut upgraded_io,
-                        &mut outbound_conn,
+                        &mut dest_stream,
                     )
                     .await
                     {
-                        Ok((sent, received)) => {
-                            info!(
-                                "CONNECT tunnel from {} to {} closed. Sent: {}, Received: {}",
-                                remote_addr, target_addr, sent, received
+                        Ok(stats) => {
+                            tracing::info!(
+                                src_addr = remote_addr.to_string(),
+                                dst_addr = target_addr.to_string(),
+                                send = stats.a_to_b_bytes,
+                                recv = stats.b_to_a_bytes,
+                                status = "ok",
+                                "Connect"
                             );
                         }
-                        Err(e) => {
-                            error!("Error during bidirectional copy for {}: {}", remote_addr, e);
+                        Err((err, stats)) => {
+                            tracing::error!(
+                                src_addr = remote_addr.to_string(),
+                                dst_addr = target_addr.to_string(),
+                                send = stats.a_to_b_bytes,
+                                recv = stats.b_to_a_bytes,
+                                status = "err",
+                                error = %err,
+                                "Connect"
+                            );
                         }
                     }
                 }

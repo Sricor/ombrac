@@ -35,12 +35,36 @@ where
     async fn handle_connect(
         &self,
         address: Socks5Address,
-        stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> io::Result<(u64, u64)> {
-        info!("SOCKS: Handling CONNECT to {}", address);
-        let addr = util::socks_to_ombrac_addr(address)?;
-        let mut outbound = self.client.open_bidirectional(addr).await?;
-        ombrac_transport::io::copy_bidirectional(stream, &mut outbound).await
+        mut stream: &mut Stream<impl AsyncRead + AsyncWrite + Unpin>,
+    ) -> io::Result<()> {
+        let dst_addr = util::socks_to_ombrac_addr(address)?;
+        let mut dest_stream = self.client.open_bidirectional(dst_addr.clone()).await?;
+        match ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await {
+            Ok(stats) => {
+                tracing::info!(
+                    src_addr = stream.local_addr().to_string(),
+                    dst_addr = dst_addr.to_string(),
+                    send = stats.a_to_b_bytes,
+                    recv = stats.b_to_a_bytes,
+                    status = "ok",
+                    "Connect"
+                );
+            }
+            Err((err, stats)) => {
+                tracing::error!(
+                    src_addr = stream.local_addr().to_string(),
+                    dst_addr = dst_addr.to_string(),
+                    send = stats.a_to_b_bytes,
+                    recv = stats.b_to_a_bytes,
+                    status = "err",
+                    error = %err,
+                    "Connect"
+                );
+                return Err(err);
+            }
+        };
+
+        Ok(())
     }
 
     /// Handles the SOCKS5 UDP ASSOCIATE command.
@@ -144,24 +168,13 @@ where
             Request::Connect(address) => {
                 stream.write_response_unspecified().await?;
 
-                match self.handle_connect(address.clone(), stream).await {
-                    Ok((up, down)) => {
-                        info!(
-                            "SOCKS: Connect to {} finished. Client: {}, Upstream: {} bytes, Downstream: {} bytes",
-                            address,
-                            stream.peer_addr(),
-                            up,
-                            down
-                        );
+                if let Err(err) = self.handle_connect(address.clone(), stream).await {
+                    if err.kind() != io::ErrorKind::BrokenPipe
+                        && err.kind() != io::ErrorKind::ConnectionReset
+                    {
+                        error!("SOCKS: Connect to {} failed: {}", address, err);
                     }
-                    Err(err) => {
-                        if err.kind() != io::ErrorKind::BrokenPipe
-                            && err.kind() != io::ErrorKind::ConnectionReset
-                        {
-                            error!("SOCKS: Connect to {} failed: {}", address, err);
-                        }
-                        return Err(err);
-                    }
+                    return Err(err);
                 }
             }
             #[cfg(feature = "datagram")]

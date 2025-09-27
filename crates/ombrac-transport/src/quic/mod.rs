@@ -2,7 +2,6 @@ mod error;
 mod stream;
 
 pub mod client;
-pub mod protocol;
 pub mod server;
 
 use std::path::Path;
@@ -177,12 +176,14 @@ impl crate::Connection for quinn::Connection {
         Ok(stream::Stream(send, recv))
     }
 
+    #[cfg(feature = "datagram")]
     async fn read_datagram(&self) -> io::Result<bytes::Bytes> {
         quinn::Connection::read_datagram(self)
             .await
             .map_err(|e| ConnectionError::from(e).into())
     }
 
+    #[cfg(feature = "datagram")]
     async fn send_datagram(&self, data: bytes::Bytes) -> io::Result<()> {
         quinn::Connection::send_datagram(self, data).map_err(|e| ConnectionError::from(e).into())
     }
@@ -191,6 +192,7 @@ impl crate::Connection for quinn::Connection {
         Ok(quinn::Connection::remote_address(self))
     }
 
+    #[cfg(feature = "datagram")]
     fn max_datagram_size(&self) -> Option<usize> {
         quinn::Connection::max_datagram_size(self)
     }

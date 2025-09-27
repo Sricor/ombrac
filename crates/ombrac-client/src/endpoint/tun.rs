@@ -354,13 +354,35 @@ where
                 Address::from(remote_addr)
             };
 
-        let mut remote_stream = self.client.open_bidirectional(target_addr.clone()).await?;
-        let (up, down) =
-            ombrac_transport::io::copy_bidirectional(&mut stream, &mut remote_stream).await?;
-        info!(
-            "{} Connect {}. Sent: {}, Recv: {}",
-            local_addr, target_addr, up, down
-        );
+        let mut dest_stream = self.client.open_bidirectional(target_addr.clone()).await?;
+
+        match ombrac_transport::io::copy_bidirectional(&mut stream, &mut dest_stream).await {
+            Ok(stats) => {
+                tracing::info!(
+                    src_addr = local_addr.to_string(),
+                    fake_addr = remote_addr.to_string(),
+                    dst_addr = target_addr.to_string(),
+                    send = stats.a_to_b_bytes,
+                    recv = stats.b_to_a_bytes,
+                    status = "ok",
+                    "Connect"
+                );
+            }
+            Err((err, stats)) => {
+                tracing::error!(
+                    src_addr = local_addr.to_string(),
+                    fake_addr = remote_addr.to_string(),
+                    dst_addr = target_addr.to_string(),
+                    send = stats.a_to_b_bytes,
+                    recv = stats.b_to_a_bytes,
+                    status = "err",
+                    error = %err,
+                    "Connect"
+                );
+                return Err(err.into());
+            }
+        }
+
         Ok(())
     }
 
