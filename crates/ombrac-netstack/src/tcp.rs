@@ -127,7 +127,6 @@ impl TcpConnection {
 
             socket.set_keep_alive(Some(config.tcp_keep_alive.into()));
             socket.set_timeout(Some(config.tcp_timeout.into()));
-            socket.set_ack_delay(Some(config.tcp_ack_delay.into()));
             socket.set_nagle_enabled(false);
             socket.set_congestion_control(CongestionControl::Cubic);
 
@@ -300,12 +299,10 @@ impl TcpConnection {
         device: &mut NetstackDevice,
         mut notifier_rx: mpsc::Receiver<IfaceEvent<'_>>,
     ) -> std::io::Result<()> {
-        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(50);
+        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(30);
 
         let mut sockets = SocketSet::new(vec![]);
         let mut socket_maps: HashMap<smoltcp::iface::SocketHandle, SocketIOHandle> = HashMap::new();
-
-        let mut housekeeping_timer = tokio::time::interval(HOUSEKEEPING_INTERVAL);
 
         loop {
             let now = smoltcp::time::Instant::now();
@@ -331,7 +328,6 @@ impl TcpConnection {
                     }
                 }
                 _ = tokio::time::sleep(smoltcp_delay) => {},
-                _ = housekeeping_timer.tick() => {},
             }
 
             // Poll the interface to process any pending packets or timers.

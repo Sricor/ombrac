@@ -81,7 +81,6 @@ pub struct NetStackConfig {
 
     pub tcp_keep_alive: Duration,
     pub tcp_timeout: Duration,
-    pub tcp_ack_delay: Duration,
     pub packet_batch_size: usize,
     pub ip_ttl: u8,
 }
@@ -102,7 +101,6 @@ impl Default for NetStackConfig {
 
             tcp_timeout: Duration::from_secs(60),
             tcp_keep_alive: Duration::from_secs(28),
-            tcp_ack_delay: Duration::from_millis(10),
             packet_batch_size: 32,
             ip_ttl: 64,
         }
