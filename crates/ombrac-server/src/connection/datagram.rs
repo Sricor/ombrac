@@ -287,7 +287,12 @@ impl<C: Connection> DownstreamHandler<C> {
                             }
                         },
                         Err(_err) => {
-                            warn!("failed to receiving from remote socket {_err}");
+                            // WouldBlock/TimedOut are transient; all other errors are fatal for this socket.
+                            if matches!(_err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) {
+                                continue;
+                            }
+                            warn!("fatal error receiving from remote socket, closing session: {_err}");
+                            break;
                         }
                     };
                 }
