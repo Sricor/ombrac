@@ -16,10 +16,15 @@ pub struct EndpointConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<SocketAddr>,
 
-    /// The address to bind for the SOCKS server
+    /// The address to bind for the SOCKS5 server
     #[cfg(feature = "endpoint-socks")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socks: Option<SocketAddr>,
+
+    /// The address to bind for the SOCKS4 / SOCKS4a server
+    #[cfg(feature = "endpoint-socks4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socks4: Option<SocketAddr>,
 
     #[cfg(feature = "endpoint-tun")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,6 +287,8 @@ impl ConfigBuilder {
             http: _override_config.http.or(_base.http),
             #[cfg(feature = "endpoint-socks")]
             socks: _override_config.socks.or(_base.socks),
+            #[cfg(feature = "endpoint-socks4")]
+            socks4: _override_config.socks4.or(_base.socks4),
             #[cfg(feature = "endpoint-tun")]
             tun: Self::merge_tun(_base.tun, _override_config.tun),
         }
@@ -608,5 +615,36 @@ mod tests {
             cfg.endpoint.socks.unwrap().to_string(),
             "127.0.0.1:1080"
         );
+    }
+
+    #[cfg(feature = "endpoint-socks4")]
+    #[test]
+    fn endpoint_socks4_address_parses_from_json() {
+        let json = r#"{
+            "secret": "k",
+            "server": "s:1",
+            "endpoint": { "socks4": "127.0.0.1:1180" }
+        }"#;
+        let cfg = load_from_json(json).unwrap();
+        assert_eq!(
+            cfg.endpoint.socks4.unwrap().to_string(),
+            "127.0.0.1:1180"
+        );
+    }
+
+    #[cfg(all(feature = "endpoint-socks", feature = "endpoint-socks4"))]
+    #[test]
+    fn endpoint_socks_and_socks4_coexist() {
+        let json = r#"{
+            "secret": "k",
+            "server": "s:1",
+            "endpoint": {
+                "socks": "127.0.0.1:1080",
+                "socks4": "127.0.0.1:1180"
+            }
+        }"#;
+        let cfg = load_from_json(json).unwrap();
+        assert_eq!(cfg.endpoint.socks.unwrap().port(), 1080);
+        assert_eq!(cfg.endpoint.socks4.unwrap().port(), 1180);
     }
 }

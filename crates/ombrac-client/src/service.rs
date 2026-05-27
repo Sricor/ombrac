@@ -35,6 +35,7 @@ pub enum Error {
 #[cfg(any(
     feature = "endpoint-default",
     feature = "endpoint-socks",
+    feature = "endpoint-socks4",
     feature = "endpoint-http",
     feature = "endpoint-tun"
 ))]
@@ -133,12 +134,25 @@ impl OmbracClient {
             ));
         }
 
-        // Start SOCKS endpoint if configured
+        // Start SOCKS5 endpoint if configured
         #[cfg(feature = "endpoint-socks")]
         if config.endpoint.socks.is_some() {
             _handles.push(Self::spawn_endpoint(
-                "SOCKS",
+                "SOCKS5",
                 Self::endpoint_socks_accept_loop(
+                    config.clone(),
+                    client.clone(),
+                    shutdown_tx.subscribe(),
+                ),
+            ));
+        }
+
+        // Start SOCKS4 endpoint if configured
+        #[cfg(feature = "endpoint-socks4")]
+        if config.endpoint.socks4.is_some() {
+            _handles.push(Self::spawn_endpoint(
+                "SOCKS4",
+                Self::endpoint_socks4_accept_loop(
                     config.clone(),
                     client.clone(),
                     shutdown_tx.subscribe(),
@@ -230,6 +244,7 @@ impl OmbracClient {
     #[cfg(any(
         feature = "endpoint-default",
         feature = "endpoint-socks",
+        feature = "endpoint-socks4",
         feature = "endpoint-http",
         feature = "endpoint-tun"
     ))]
@@ -270,24 +285,64 @@ impl OmbracClient {
         ombrac: Arc<Client<QuicClient, QuicConnection>>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
-        use crate::endpoint::socks::CommandHandler;
-        use socks_lib::v5::server::auth::NoAuthentication;
-        use socks_lib::v5::server::{Config as SocksConfig, Server as SocksServer};
+        use crate::endpoint::socks::{ArcClient, accept_loop, v5};
 
         let bind_addr = require_config!(config.endpoint.socks, "endpoint.socks")?;
-        let socket = tokio::net::TcpListener::bind(bind_addr).await?;
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
-        info!("starting socks endpoint, listening on {bind_addr}");
+        info!("starting socks5 endpoint, listening on {bind_addr}");
 
-        let socks_config = Arc::new(SocksConfig::new(
-            NoAuthentication,
-            CommandHandler::new(ombrac),
-        ));
-        SocksServer::run(socket, socks_config, async {
-            let _ = shutdown_rx.recv().await;
-        })
+        fn handle(
+            s: tokio::net::TcpStream,
+            p: std::net::SocketAddr,
+            c: ArcClient,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send>> {
+            Box::pin(v5::handle(s, p, c))
+        }
+
+        accept_loop(
+            listener,
+            ombrac,
+            async move {
+                let _ = shutdown_rx.recv().await;
+            },
+            handle,
+        )
         .await
-        .map_err(|e| Error::Endpoint(format!("socks server failed to run: {}", e)))
+        .map_err(|e| Error::Endpoint(format!("socks5 server failed to run: {}", e)))
+    }
+
+    #[cfg(feature = "endpoint-socks4")]
+    async fn endpoint_socks4_accept_loop(
+        config: Arc<ServiceConfig>,
+        ombrac: Arc<Client<QuicClient, QuicConnection>>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> Result<()> {
+        use crate::endpoint::socks::{ArcClient, accept_loop, v4};
+
+        let bind_addr = require_config!(config.endpoint.socks4, "endpoint.socks4")?;
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+
+        info!("starting socks4 endpoint, listening on {bind_addr}");
+
+        fn handle(
+            s: tokio::net::TcpStream,
+            p: std::net::SocketAddr,
+            c: ArcClient,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send>> {
+            Box::pin(v4::handle(s, p, c))
+        }
+
+        accept_loop(
+            listener,
+            ombrac,
+            async move {
+                let _ = shutdown_rx.recv().await;
+            },
+            handle,
+        )
+        .await
+        .map_err(|e| Error::Endpoint(format!("socks4 server failed to run: {}", e)))
     }
 
     #[cfg(feature = "endpoint-tun")]

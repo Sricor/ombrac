@@ -65,10 +65,15 @@ pub struct CliEndpointConfig {
     #[clap(long, value_name = "ADDR", help_heading = "Endpoint")]
     pub http: Option<SocketAddr>,
 
-    /// The address to bind for the SOCKS server
+    /// The address to bind for the SOCKS5 server
     #[cfg(feature = "endpoint-socks")]
     #[clap(long, value_name = "ADDR", help_heading = "Endpoint")]
     pub socks: Option<SocketAddr>,
+
+    /// The address to bind for the SOCKS4 / SOCKS4a server
+    #[cfg(feature = "endpoint-socks4")]
+    #[clap(long, value_name = "ADDR", help_heading = "Endpoint")]
+    pub socks4: Option<SocketAddr>,
 
     #[cfg(feature = "endpoint-tun")]
     #[clap(flatten)]
@@ -83,6 +88,8 @@ impl CliEndpointConfig {
             http: self.http,
             #[cfg(feature = "endpoint-socks")]
             socks: self.socks,
+            #[cfg(feature = "endpoint-socks4")]
+            socks4: self.socks4,
             #[cfg(feature = "endpoint-tun")]
             tun: self.tun.map(|t| t.into_tun_config()),
         }

@@ -4,6 +4,7 @@ pub mod connection;
 #[cfg(any(
     feature = "endpoint-default",
     feature = "endpoint-socks",
+    feature = "endpoint-socks4",
     feature = "endpoint-http",
     feature = "endpoint-tun"
 ))]
