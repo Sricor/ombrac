@@ -56,10 +56,10 @@ pub async fn accept_loop(
                 };
                 let client = client.clone();
                 tokio::spawn(async move {
-                    if let Err(_e) = handler(stream, peer, client).await {
-                        if !is_benign_io_error(&_e) {
-                            error!(src_addr = %peer, error = %_e, "socks connection failed");
-                        }
+                    if let Err(_e) = handler(stream, peer, client).await
+                        && !is_benign_io_error(&_e)
+                    {
+                        error!(src_addr = %peer, error = %_e, "socks connection failed");
                     }
                 });
             }
